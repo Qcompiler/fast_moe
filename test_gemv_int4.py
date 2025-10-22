@@ -115,7 +115,9 @@ __global__ void warp_specialized_gemv_kernel(
   
     int total_iterations = K / 8  * ((sizeof(int32_t) / sizeof(int8_t)) * 2);
     // 每个warp需要处理的迭代次数
-    int iterations_per_warp = (total_iterations + TOTAL_WARPS - 1) / TOTAL_WARPS;
+
+    const int TOTAL_WARPS_ = 8;
+    int iterations_per_warp = (total_iterations + TOTAL_WARPS_ - 1) / TOTAL_WARPS_;
     
     // 计算当前warp的起始迭代索引
     int start = warp_id * iterations_per_warp;
@@ -123,6 +125,7 @@ __global__ void warp_specialized_gemv_kernel(
     int end = min((warp_id + 1) * iterations_per_warp, total_iterations);
     
     // 每个warp内的线程以WARP_SIZE为步长进行迭代
+    if (warp_id < TOTAL_WARPS_)
     for (int i = start + lane; i < end; i += WARP_SIZE) {
         *(((int4 *)shmem_vector) + i) = *(((int4 *)x) + i);
     }
@@ -243,7 +246,7 @@ parser.add_argument('--marlin', type=int, default=0)
 args = parser.parse_args()
 
 from common.common import generate_randint, gen_quant4, gen_quant4_my
-for (out_dim, k) in [  (2048, 4096), (4096, 4096), (4096, 12288), (4096, 11008 * 2) ]:
+for (out_dim, k) in [ (2048, 2048), (2048, 4096), (4096, 4096), (12288, 4096), (8192, 8192) ]:
   dtype = torch.float16
 
 

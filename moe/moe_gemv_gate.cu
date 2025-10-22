@@ -120,6 +120,7 @@ __global__ void warp_specialized_gemv_kernel_warp_split_expert(
     int end = min((warp_id + 1) * iterations_per_warp, total_iterations);
     
     // 每个warp内的线程以WARP_SIZE为步长进行迭代
+    if (warp_id < NUM_WARP)
     for (int i = start + lane; i < end; i += WARP_SIZE) {
         *(((int4 *)shmem_vector) + i) = *(((int4 *)x) + i);
     }
@@ -195,12 +196,10 @@ void warp_specialized_gemv( const half* d_A, const  half* d_B,
     
     switch(kernel_type) {
       case 0:
-        warp_specialized_gemv_kernel<NUM_WARP><<<grid, block, 
-    sharedMemSize, stream>>>( d_A, d_B,  d_C, moe_index, ntopx,  M, K);
+        warp_specialized_gemv_kernel<NUM_WARP><<<grid, block, sharedMemSize, stream>>>( d_A, d_B,  d_C, moe_index, ntopx,  M, K);
         break;
       case 1:
-        warp_specialized_gemv_kernel_warp_split_expert<NUM_WARP, each_warp_reduce_compute><<<grid, block, 
-    sharedMemSize, stream>>>( d_A, d_B,  d_C, moe_index, ntopx,  M, K);
+        warp_specialized_gemv_kernel_warp_split_expert<NUM_WARP, each_warp_reduce_compute><<<grid, block, sharedMemSize, stream>>>( d_A, d_B,  d_C, moe_index, ntopx,  M, K);
         break;
       default:
         throw std::invalid_argument("Invalid kernel type");

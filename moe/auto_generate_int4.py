@@ -47,12 +47,12 @@ for i in range(len(data)):
         data[i] = data[i].replace(code, code_)
 
     code = "half2 reg_a_0 = *(reinterpret_cast<half2 *>(&reg)  );"
-    code_ = "half2 reg_a_0[4]; int reg_a_0_int = *(reinterpret_cast<int *>(&reg)  ); int reg_a_0_shift = reg_a_0_int >> 8;; dequant(reg_a_0_int, reg_a_0); dequant(reg_a_0_shift, reg_a_0 + 2);"
+    code_ = "half2 reg_a_0[4]; int reg_a_0_int = *(reinterpret_cast<int *>(&reg)  ); dequant(reg_a_0_int, reg_a_0); "
     if code in data[i]:
         data[i] = data[i].replace(code, code_)   
 
     code = "half2 reg_a_1 = *(reinterpret_cast<half2 *>(&reg) + 1 );"
-    code_ = "half2 reg_a_1[4]; int reg_a_1_int = *(reinterpret_cast<int *>(&reg ) + 1 ); int reg_a_1_shift = reg_a_1_int >> 8;; dequant(reg_a_1_int, reg_a_1); dequant(reg_a_1_shift, reg_a_1 + 2);"
+    code_ = "half2 reg_a_1[4]; int reg_a_1_int = *(reinterpret_cast<int *>(&reg ) + 1 ); dequant(reg_a_1_int, reg_a_1); "
     if code in data[i]:
         data[i] = data[i].replace(code, code_)  
 

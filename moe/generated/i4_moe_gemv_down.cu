@@ -91,8 +91,8 @@ __global__ void warp_specialized_gemv_kernel_down_split_expert(
 
                 
                 uint2 reg = ld_cs_u32_v2((uint2*)& target_mat[m * K + k + 0]);
-                half2 reg_a_0[4]; int reg_a_0_int = *(reinterpret_cast<int *>(&reg)  ); int reg_a_0_shift = reg_a_0_int >> 8;; dequant(reg_a_0_int, reg_a_0); dequant(reg_a_0_shift, reg_a_0 + 2); 
-                half2 reg_a_1[4]; int reg_a_1_int = *(reinterpret_cast<int *>(&reg ) + 1 ); int reg_a_1_shift = reg_a_1_int >> 8;; dequant(reg_a_1_int, reg_a_1); dequant(reg_a_1_shift, reg_a_1 + 2);
+                half2 reg_a_0[4]; int reg_a_0_int = *(reinterpret_cast<int *>(&reg)  ); dequant(reg_a_0_int, reg_a_0);  
+                half2 reg_a_1[4]; int reg_a_1_int = *(reinterpret_cast<int *>(&reg ) + 1 ); dequant(reg_a_1_int, reg_a_1); 
 								 for (int kk = 0; kk < 4; ++kk) 
                 tmp += (float(reg_x_0[kk].x) * float(reg_a_0[kk].x) + float(reg_x_0[kk].y) * float(reg_a_0[kk].y) + float( reg_x_1[kk].x) * float(reg_a_1[kk].x) + float(reg_x_1[kk].y) * float(reg_a_1[kk].y));
 									 tmp *=   scales_ptr[  (k * 8 ) / 128];   sum[topx] +=  tmp;
@@ -202,8 +202,8 @@ __global__ void warp_specialized_gemv_kernel_down(
           half2 reg_x_1[4];*(((int4 *)reg_x_1)) =  *(((int4 *)shmem_vector) +  k + 1);
           
           uint2 reg = ld_cs_u32_v2((uint2*)& target_mat[m * K + k + 0]);
-          half2 reg_a_0[4]; int reg_a_0_int = *(reinterpret_cast<int *>(&reg)  ); int reg_a_0_shift = reg_a_0_int >> 8;; dequant(reg_a_0_int, reg_a_0); dequant(reg_a_0_shift, reg_a_0 + 2); 
-          half2 reg_a_1[4]; int reg_a_1_int = *(reinterpret_cast<int *>(&reg ) + 1 ); int reg_a_1_shift = reg_a_1_int >> 8;; dequant(reg_a_1_int, reg_a_1); dequant(reg_a_1_shift, reg_a_1 + 2);
+          half2 reg_a_0[4]; int reg_a_0_int = *(reinterpret_cast<int *>(&reg)  ); dequant(reg_a_0_int, reg_a_0);  
+          half2 reg_a_1[4]; int reg_a_1_int = *(reinterpret_cast<int *>(&reg ) + 1 ); dequant(reg_a_1_int, reg_a_1); 
 								 for (int kk = 0; kk < 4; ++kk) 
           tmp += (float(reg_x_0[kk].x) * float(reg_a_0[kk].x) + float(reg_x_0[kk].y) * float(reg_a_0[kk].y) + float( reg_x_1[kk].x) * float(reg_a_1[kk].x) + float(reg_x_1[kk].y) * float(reg_a_1[kk].y));
 									 tmp *=   scales_ptr[  (k * 8 ) / 128];   sum[topx] +=  tmp;
@@ -229,8 +229,8 @@ __global__ void warp_specialized_gemv_kernel_down(
 const uint32_t table[16] = {
     1, 1, 2, 4, 4, 8, 8, 8, 8, 16, 16, 16, 16, 16, 16, 16,
 };
-void warp_specialized_gemv_down( const int32_t* down, const  half* input,
-     half* output, float *topk_weight, const int32_t *moe_index, 
+void warp_specialized_gemv_down( const int32_t* d_A, const  half* d_B,
+     half* d_C, float *topk_weight, const int32_t *moe_index, 
      int ntopx, float* scales, int group_size,  int M, int K, cudaStream_t stream, int kernel_type) {
 
     const int NUM_WARP = 8;
@@ -244,9 +244,7 @@ void warp_specialized_gemv_down( const int32_t* down, const  half* input,
  sharedMemSize = sharedMemSize * 8;
  assert(group_size == 128);    
 
-      warp_specialized_gemv_kernel_down<<<grid, block, 
-        sharedMemSize, stream>>>( down, input,  
-        output, topk_weight, moe_index, ntopx,  scales, group_size, M, K);
+      warp_specialized_gemv_kernel_down<<<grid, block, sharedMemSize, stream>>>( d_A, d_B,  d_C, topk_weight, moe_index, ntopx,  scales, group_size, M, K);
 
     }
     if (kernel_type == 1)
@@ -258,8 +256,7 @@ void warp_specialized_gemv_down( const int32_t* down, const  half* input,
 
  sharedMemSize = sharedMemSize * 8;
  assert(group_size == 128);        warp_specialized_gemv_kernel_down_split_expert<NUM_WARP, each_warp_reduce_compute>
-        <<<grid, block,  sharedMemSize, stream>>>( down, input,  
-        output, topk_weight, moe_index, ntopx,  scales, group_size, M, K);
+        <<<grid, block,  sharedMemSize, stream>>>( d_A, d_B,  d_C,  topk_weight, moe_index, ntopx,  scales, group_size, M, K);
 
     }
 

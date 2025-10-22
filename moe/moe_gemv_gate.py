@@ -27,19 +27,26 @@ kernel_type = args.kernel_type
 
 
 if args.quant == 1:
-      lib_quant = load_cuda_ops(
-        name="i4_gate",
-        sources=import_code("generated/i4_moe_gemv_gate.cu"),
-        func_names=["warp_specialized_gemv_gate_host"],
-        func_params=["t_t_t_t"],
-        arches=[ "89", "90a"],
-        extra_include_paths=["include"],
-        build_directory="./build",
-      )
+
+  if args.bf16:
+    code = "generated/i4_bf16_moe_gemv_gate.cu"
+
+  else:
+    code = "generated/i4_moe_gemv_gate.cu"
+
+  lib_quant = load_cuda_ops(
+    name="i4_gate",
+    sources=import_code(code),
+    func_names=["warp_specialized_gemv_gate_host"],
+    func_params=["t_t_t_t"],
+    arches=[ "89", "90a"],
+    extra_include_paths=["include"],
+    build_directory="./build",
+  )
 
 code_name = "moe_gemv_gate.cu"
 if args.bf16:
-  code_name = "bf16" + code_name
+  code_name = "generated/bf16_" + code_name
 
   
   
@@ -111,10 +118,10 @@ for (out_dim, k) in [(512,  2048),   (2048, 2048) , (2048, 4096), (4096, 4096), 
                                                 all_scales, group_size, kernel_type)
       
       # print(all_scales)
-
       # print(hidden4)
       # print(hidden)
-      torch.testing.assert_close(hidden+0.01, hidden4+0.01, rtol = torch.inf, atol=2)
+
+      torch.testing.assert_close((hidden+0.01).to(torch.float), (hidden4+0.01).to(torch.float), rtol = 0.1, atol=100)
 
 
   torch.testing.assert_close(hidden2, hidden, rtol=1e-2, atol=1e-2)

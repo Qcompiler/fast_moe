@@ -71,7 +71,7 @@ __global__ void warp_specialized_gemv_kernel(
     int lane = tx % WARP_SIZE;    // 0~31
     int m = blockDim.y * bx + ty; // (0~M/4) * 4 + (0~3)
   
-    const int TOTAL_WARPS = 4; // 每个block中的warp数量
+    const int TOTAL_WARPS = 2; // 
     int total_iterations = K / 8;
     // 每个warp需要处理的迭代次数
     int iterations_per_warp = (total_iterations + TOTAL_WARPS - 1) / TOTAL_WARPS;
@@ -82,15 +82,12 @@ __global__ void warp_specialized_gemv_kernel(
     int end = min((warp_id + 1) * iterations_per_warp, total_iterations);
     
     // 每个warp内的线程以WARP_SIZE为步长进行迭代
-    for (int i = start + lane; i < end; i += WARP_SIZE) {
-        *(((int4 *)shmem_vector) + i) = *(((int4 *)x) + i);
-    }
-    // Warp 0: Load vector into shared memory
-    // if (warp_id == 0) {
-    //     for (int i = lane; i < K / 8; i += WARP_SIZE) {
-    //         *(((int4 *)shmem_vector) + i)      =  *(((int4 *)x) + i) ;
-    //     }
-    // }
+
+    if (warp_id < TOTAL_WARPS)
+      for (int i = start + lane; i < end; i += WARP_SIZE) {
+          *(((int4 *)shmem_vector) + i) = *(((int4 *)x) + i);
+      }
+
     int NUM_WARPS = (((K + WARP_SIZE - 1) / WARP_SIZE) + 4 - 1) / 4;
     float sum = 0.0f;
 

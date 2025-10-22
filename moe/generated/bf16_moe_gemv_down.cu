@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h> 
+#include <cuda_bf16.h>
 #include <sys/time.h>
 #include <stdint.h>
 #include <assert.h>
@@ -10,15 +11,15 @@
 
 template <int NUM_WARP, int each_warp_reduce_compute>
 __global__ void warp_specialized_gemv_kernel_down_split_expert(
-    const half* __restrict__ a,
-    const half* __restrict__ x,
-    half* __restrict__ y,
+    const __nv_bfloat16* __restrict__ a,
+    const __nv_bfloat16* __restrict__ x,
+    __nv_bfloat16* __restrict__ y,
     float *topk_weight,
     const int32_t *moe_index,
     int ntopx,
     int M, int K
 ) {
-    extern __shared__ half shmem_vector[];
+    extern __shared__ __nv_bfloat16 shmem_vector[];
     float *shem_float = (float *) shmem_vector;
     
     int warp_id = threadIdx.y;
@@ -57,7 +58,7 @@ __global__ void warp_specialized_gemv_kernel_down_split_expert(
       int target_expect = moe_index[index];
 
 
-      const half * target_mat = a +  target_expect * M * K;
+      const __nv_bfloat16 * target_mat = a +  target_expect * M * K;
       // 要写的vector的长度变成了 each_warp_reduce_compute * K
 
       int total_iterations = (K  * each_warp_reduce_compute) / 8;
@@ -73,7 +74,7 @@ __global__ void warp_specialized_gemv_kernel_down_split_expert(
     //  if ((blockIdx.x == 0) && (warp_id < each_warp_reduce_compute) && (threadIdx.x == 0))
     //     {
     //       for (int i = 0 ; i < 2; ++i)
-    //       printf("warp = %d, shmem_vector[%d] =%.4f  index = %d\n", warp_id, i, __half2float((shmem_vector + (warp_id % each_warp_reduce_compute) * K)[i]), index);
+    //       printf("warp = %d, shmem_vector[%d] =%.4f  index = %d\n", warp_id, i, ____nv_bfloat162float((shmem_vector + (warp_id % each_warp_reduce_compute) * K)[i]), index);
 
     //     }
 
@@ -83,13 +84,13 @@ __global__ void warp_specialized_gemv_kernel_down_split_expert(
             #pragma unroll  4
               for (int w = 0; w < NUM_WARPS; ++w) {
                 int k = (w * WARP_SIZE + lane) * 4;
-                half2 reg_x_0 = HALF2(( shmem_vector + (warp_id % each_warp_reduce_compute) * K)  [k + 0]);
-                half2 reg_x_1 = HALF2(( shmem_vector + (warp_id % each_warp_reduce_compute) * K)  [k + 2]);
+                __nv_bfloat162 reg_x_0 = BFLOAT2(( shmem_vector + (warp_id % each_warp_reduce_compute) * K)  [k + 0]);
+                __nv_bfloat162 reg_x_1 = BFLOAT2(( shmem_vector + (warp_id % each_warp_reduce_compute) * K)  [k + 2]);
 
                 
                 auto reg = ld_cs_u32_v2((uint2*)& target_mat[m * K + k + 0]);
-                half2 reg_a_0 = *(reinterpret_cast<half2 *>(&reg)  ); 
-                half2 reg_a_1 = *(reinterpret_cast<half2 *>(&reg) + 1 );
+                __nv_bfloat162 reg_a_0 = *(reinterpret_cast<__nv_bfloat162 *>(&reg)  ); 
+                __nv_bfloat162 reg_a_1 = *(reinterpret_cast<__nv_bfloat162 *>(&reg) + 1 );
                 sum[topx] += (float(reg_x_0.x) * float(reg_a_0.x) + float(reg_x_0.y) * float(reg_a_0.y) + float( reg_x_1.x) * float(reg_a_1.x) + float(reg_x_1.y) * float(reg_a_1.y));
 
 
@@ -127,21 +128,21 @@ __global__ void warp_specialized_gemv_kernel_down_split_expert(
         for (int i = 0 ; i < each_warp_reduce_compute; ++i)
             all += shem_float[warp_id + i];
 
-        y[m] = (__float2half)( all );
+        y[m] = (__float2bfloat16)( all );
     }
   }
 }
 
 __global__ void warp_specialized_gemv_kernel_down(
-    const half* __restrict__ a,
-    const half* __restrict__ x,
-    half* __restrict__ y,
+    const __nv_bfloat16* __restrict__ a,
+    const __nv_bfloat16* __restrict__ x,
+    __nv_bfloat16* __restrict__ y,
     float *topk_weight,
     const int32_t *moe_index,
     int ntopx,
     int M, int K
 ) {
-    extern __shared__ half shmem_vector[];
+    extern __shared__ __nv_bfloat16 shmem_vector[];
     
     int warp_id = threadIdx.y;
 
@@ -178,7 +179,7 @@ __global__ void warp_specialized_gemv_kernel_down(
     
     for (int topx = 0; topx < ntopx; topx++ ){
       int target_expect = moe_index[topx];
-      const half * target_mat = a +  target_expect * M * K;
+      const __nv_bfloat16 * target_mat = a +  target_expect * M * K;
       // if (topx)
       //   __syncthreads();
       for (int i = start + lane; i < end; i += WARP_SIZE) {
@@ -191,12 +192,12 @@ __global__ void warp_specialized_gemv_kernel_down(
         for (int w = 0; w < NUM_WARPS; ++w) {
           int k = (w * WARP_SIZE + lane) * 4;
 
-          half2 reg_x_0 = HALF2( shmem_vector  [k + 0]);
-          half2 reg_x_1 = HALF2( shmem_vector  [k + 2]);
+          __nv_bfloat162 reg_x_0 = BFLOAT2( shmem_vector  [k + 0]);
+          __nv_bfloat162 reg_x_1 = BFLOAT2( shmem_vector  [k + 2]);
           
           auto reg = ld_cs_u32_v2((uint2*)& target_mat[m * K + k + 0]);
-          half2 reg_a_0 = *(reinterpret_cast<half2 *>(&reg)  ); 
-          half2 reg_a_1 = *(reinterpret_cast<half2 *>(&reg) + 1 );
+          __nv_bfloat162 reg_a_0 = *(reinterpret_cast<__nv_bfloat162 *>(&reg)  ); 
+          __nv_bfloat162 reg_a_1 = *(reinterpret_cast<__nv_bfloat162 *>(&reg) + 1 );
           sum[topx] += (float(reg_x_0.x) * float(reg_a_0.x) + float(reg_x_0.y) * float(reg_a_0.y) + float( reg_x_1.x) * float(reg_a_1.x) + float(reg_x_1.y) * float(reg_a_1.y));
 
 
@@ -213,7 +214,7 @@ __global__ void warp_specialized_gemv_kernel_down(
         for (int topx = 0; topx < ntopx; topx++ ){
             sum_all += sum[topx] * (topk_weight[topx]);
         }
-        y[m] = (__float2half)( sum_all );
+        y[m] = (__float2bfloat16)( sum_all );
       }
   }
 }
@@ -229,12 +230,18 @@ void warp_specialized_gemv_down( const half* d_A, const  half* d_B,
     dim3 block(32, NUM_WARP);
  
     dim3 grid;
+
+ 	 	 const __nv_bfloat16 * d_A_ = reinterpret_cast<const __nv_bfloat16*>(d_A); 
+
+ 	 	 const __nv_bfloat16 * d_B_ = reinterpret_cast<const __nv_bfloat16*>(d_B); 
+
+ 	 	  __nv_bfloat16 * d_C_ = reinterpret_cast< __nv_bfloat16*>(d_C); 
     if (kernel_type == 0){
        grid = dim3((M + NUM_WARP - 1) / NUM_WARP, 1);
       int sharedMemSize = K *  sizeof(half) ; // Shared memory for A
     
 
-      warp_specialized_gemv_kernel_down<<<grid, block, sharedMemSize, stream>>>( d_A, d_B,  d_C, topk_weight, moe_index, ntopx,  M, K);
+      warp_specialized_gemv_kernel_down<<<grid, block, sharedMemSize, stream>>>( d_A_, d_B_,  d_C_, topk_weight, moe_index, ntopx,  M, K);
 
     }
     if (kernel_type == 1)
@@ -244,7 +251,7 @@ void warp_specialized_gemv_down( const half* d_A, const  half* d_B,
 
        int sharedMemSize = K *  sizeof(half) * each_warp_reduce_compute; // Shared memory for A
         warp_specialized_gemv_kernel_down_split_expert<NUM_WARP, each_warp_reduce_compute>
-        <<<grid, block,  sharedMemSize, stream>>>( d_A, d_B,  d_C,  topk_weight, moe_index, ntopx,  M, K);
+        <<<grid, block,  sharedMemSize, stream>>>( d_A_, d_B_,  d_C_,  topk_weight, moe_index, ntopx,  M, K);
 
     }
 

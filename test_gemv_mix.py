@@ -131,6 +131,7 @@ __global__ void warp_specialized_gemv_kernel_mix(
 
 
     // 每个warp内的线程以WARP_SIZE为步长进行迭代
+    if (warp_id < TOTAL_WARPS)
     for (int i = start + lane; i < end; i += WARP_SIZE) {
         *(((int4 *)shmem_vector) + i) = *(((int4 *)x) + i);
     }
@@ -270,7 +271,7 @@ parser.add_argument('--marlin', type=int, default=0)
 args = parser.parse_args()
 
 
-for (out_dim, k) in [  (2048, 4096), (4096, 4096), (4096, 12288), (4096, 11008 * 2) ]:
+for (out_dim, k) in [ (2048, 2048), (2048, 4096), (4096, 4096), (12288, 4096), (8192, 8192) ]:
   dtype = torch.float16
 
   weight, vector = generate_randint(k, out_dim, device)

@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h> 
+#include <cuda_bf16.h>
 #include <sys/time.h>
 #include <stdint.h>
 #include <assert.h>
@@ -11,14 +12,14 @@
 
 template <int NUM_WARP>
 __global__ void warp_specialized_gemv_kernel(
-    const int32_t* __restrict__ a,
-    const half* __restrict__ x,
-    half* __restrict__ y,
+    const __nv_bfloat16* __restrict__ a,
+    const __nv_bfloat16* __restrict__ x,
+    __nv_bfloat16* __restrict__ y,
     const int32_t *moe_index,
     int ntopx,
-    float* scales, int group_size,  int M, int K
+    int M, int K
 ) {
-    extern __shared__ half shmem_vector[];
+    extern __shared__ __nv_bfloat16 shmem_vector[];
     
     int warp_id = threadIdx.y;
 
@@ -30,8 +31,7 @@ __global__ void warp_specialized_gemv_kernel(
     int m = blockDim.y * bx + ty; // (0~M/4) * 4 + (0~3)
   
     int total_iterations = K / 8;
-
- 			  total_iterations *=  ((sizeof(int32_t) / sizeof(int8_t)) * 2);    // 每个warp需要处理的迭代次数
+    // 每个warp需要处理的迭代次数
     int iterations_per_warp = (total_iterations + NUM_WARP - 1) / NUM_WARP;
     
     // 计算当前warp的起始迭代索引
@@ -44,7 +44,7 @@ __global__ void warp_specialized_gemv_kernel(
         *(((int4 *)shmem_vector) + i) = *(((int4 *)x) + i);
     }
 
-    const int NUM_PER_THREAD = 2; int NUM_WARPS = (((K + WARP_SIZE - 1) / WARP_SIZE) + NUM_PER_THREAD - 1) / NUM_PER_THREAD;
+    int NUM_WARPS = (((K + WARP_SIZE - 1) / WARP_SIZE) + 4 - 1) / 4;
 
     const int max_expect = 8;
     float sum[max_expect];
@@ -61,30 +61,27 @@ __global__ void warp_specialized_gemv_kernel(
     for (int topx = 0; topx < ntopx; topx++ ){
 
       int target_expect = moe_index[topx];
-      const int32_t * target_mat = a +  target_expect * M * K;
+      const __nv_bfloat16 * target_mat = a +  target_expect * M * K;
 
       #pragma unroll  4
         for (int w = 0; w < NUM_WARPS; ++w) {
-
- 			 float tmp = 0.0;
- 			 float* scales_ptr =  (float *) (  (int4 *) scales + target_expect * ( ( M * K * 8) / ( 128 * 4 ) ) +  m * ( (K  * 8) / ( 128 * 4 )) ) ;          int k = (w * WARP_SIZE + lane) * NUM_PER_THREAD;
-          half2 reg_x_0[4];*(((int4 *)reg_x_0)) =  *(((int4 *)shmem_vector) +  k);
-          half2 reg_x_1[4];*(((int4 *)reg_x_1)) =  *(((int4 *)shmem_vector) +  k + 1);
+          int k = (w * WARP_SIZE + lane) * 4;
+          __nv_bfloat162 reg_x_0 = BFLOAT2( shmem_vector  [k + 0]);
+          __nv_bfloat162 reg_x_1 = BFLOAT2( shmem_vector  [k + 2]);
 
           
-          uint2 reg = ld_cs_u32_v2((uint2*)& target_mat[m * K + k + 0]);
-          half2 reg_a_0[4]; int reg_a_0_int = *(reinterpret_cast<int *>(&reg)  ); dequant(reg_a_0_int, reg_a_0);  
-          half2 reg_a_1[4]; int reg_a_1_int = *(reinterpret_cast<int *>(&reg ) + 1 ); dequant(reg_a_1_int, reg_a_1); 
-								 for (int kk = 0; kk < 4; ++kk) 
-          tmp += (float(reg_x_0[kk].x) * float(reg_a_0[kk].x) + float(reg_x_0[kk].y) * float(reg_a_0[kk].y) +  float( reg_x_1[kk].x) * float(reg_a_1[kk].x) + float(reg_x_1[kk].y) * float(reg_a_1[kk].y));
-									 tmp *=   scales_ptr[  (k * 8 ) / 128];   sum[topx] +=  tmp;        }
+          auto reg = ld_cs_u32_v2((uint2*)& target_mat[m * K + k + 0]);
+          __nv_bfloat162 reg_a_0 = *(reinterpret_cast<__nv_bfloat162 *>(&reg)  ); 
+          __nv_bfloat162 reg_a_1 = *(reinterpret_cast<__nv_bfloat162 *>(&reg) + 1 );
+          sum[topx] += (float(reg_x_0.x) * float(reg_a_0.x) + float(reg_x_0.y) * float(reg_a_0.y) +  float( reg_x_1.x) * float(reg_a_1.x) + float(reg_x_1.y) * float(reg_a_1.y));
+        }
 
 
       sum[topx] = warp_reduce_sum_f32<WARP_SIZE>(sum[topx]);
     }
     if (lane == 0)
       for (int topx = 0; topx < ntopx; topx++ ){
-        y[m + topx * M] = (__float2half)( sum[topx]);
+        y[m + topx * M] = (__float2bfloat16)( sum[topx]);
       }
   }
 }
@@ -93,14 +90,14 @@ __global__ void warp_specialized_gemv_kernel(
 
 template <int NUM_WARP, int each_warp_reduce_compute>
 __global__ void warp_specialized_gemv_kernel_warp_split_expert(
-    const int32_t* __restrict__ a,
-    const half* __restrict__ x,
-    half* __restrict__ y,
+    const __nv_bfloat16* __restrict__ a,
+    const __nv_bfloat16* __restrict__ x,
+    __nv_bfloat16* __restrict__ y,
     const int32_t *moe_index,
     int ntopx,
-    float* scales, int group_size,  int M, int K
+    int M, int K
 ) {
-    extern __shared__ half shmem_vector[];
+    extern __shared__ __nv_bfloat16 shmem_vector[];
     
     int warp_id = threadIdx.y;
 
@@ -115,8 +112,7 @@ __global__ void warp_specialized_gemv_kernel_warp_split_expert(
 
 
     int total_iterations = K / 8;
-
- 			  total_iterations *=  ((sizeof(int32_t) / sizeof(int8_t)) * 2);    // 每个warp需要处理的迭代次数
+    // 每个warp需要处理的迭代次数
     int iterations_per_warp = (total_iterations + NUM_WARP - 1) / NUM_WARP;
     
     // 计算当前warp的起始迭代索引
@@ -130,7 +126,7 @@ __global__ void warp_specialized_gemv_kernel_warp_split_expert(
         *(((int4 *)shmem_vector) + i) = *(((int4 *)x) + i);
     }
 
-    const int NUM_PER_THREAD = 2; int NUM_WARPS = (((K + WARP_SIZE - 1) / WARP_SIZE) + NUM_PER_THREAD - 1) / NUM_PER_THREAD;
+    int NUM_WARPS = (((K + WARP_SIZE - 1) / WARP_SIZE) + 4 - 1) / 4;
 
     float sum[8];
     for (int i = 0 ; i < 8 ; ++i) 
@@ -147,23 +143,20 @@ __global__ void warp_specialized_gemv_kernel_warp_split_expert(
       // 有 8 个 warp
       int index = ( stride ) * ( ntopx / each_warp_reduce_compute) + topx;
       int target_expect = moe_index[ index ];
-      const int32_t * target_mat = a +  target_expect * M * K;
+      const __nv_bfloat16 * target_mat = a +  target_expect * M * K;
 
       #pragma unroll  4
         for (int w = 0; w < NUM_WARPS; ++w) {
-
- 			 float tmp = 0.0;
- 			 float* scales_ptr =  (float *) (  (int4 *) scales + target_expect * ( ( M * K * 8) / ( 128 * 4 ) ) +  m * ( (K  * 8) / ( 128 * 4 )) ) ;          int k = (w * WARP_SIZE + lane) * NUM_PER_THREAD;
-          half2 reg_x_0[4];*(((int4 *)reg_x_0)) =  *(((int4 *)shmem_vector) +  k);
-          half2 reg_x_1[4];*(((int4 *)reg_x_1)) =  *(((int4 *)shmem_vector) +  k + 1);
+          int k = (w * WARP_SIZE + lane) * 4;
+          __nv_bfloat162 reg_x_0 = BFLOAT2( shmem_vector  [k + 0]);
+          __nv_bfloat162 reg_x_1 = BFLOAT2( shmem_vector  [k + 2]);
 
           
-          uint2 reg = ld_cs_u32_v2((uint2*)& target_mat[m * K + k + 0]);
-          half2 reg_a_0[4]; int reg_a_0_int = *(reinterpret_cast<int *>(&reg)  ); dequant(reg_a_0_int, reg_a_0);  
-          half2 reg_a_1[4]; int reg_a_1_int = *(reinterpret_cast<int *>(&reg ) + 1 ); dequant(reg_a_1_int, reg_a_1); 
-								 for (int kk = 0; kk < 4; ++kk) 
-          tmp += (float(reg_x_0[kk].x) * float(reg_a_0[kk].x) + float(reg_x_0[kk].y) * float(reg_a_0[kk].y) + float( reg_x_1[kk].x) * float(reg_a_1[kk].x) + float(reg_x_1[kk].y) * float(reg_a_1[kk].y));
-									 tmp *=   scales_ptr[  (k * 8 ) / 128];   sum[topx] +=  tmp;        }
+          auto reg = ld_cs_u32_v2((uint2*)& target_mat[m * K + k + 0]);
+          __nv_bfloat162 reg_a_0 = *(reinterpret_cast<__nv_bfloat162 *>(&reg)  ); 
+          __nv_bfloat162 reg_a_1 = *(reinterpret_cast<__nv_bfloat162 *>(&reg) + 1 );
+          sum[topx] += (float(reg_x_0.x) * float(reg_a_0.x) + float(reg_x_0.y) * float(reg_a_0.y) + float( reg_x_1.x) * float(reg_a_1.x) + float(reg_x_1.y) * float(reg_a_1.y));
+        }
 
 
       sum[topx] = warp_reduce_sum_f32<WARP_SIZE>(sum[topx]);
@@ -171,7 +164,7 @@ __global__ void warp_specialized_gemv_kernel_warp_split_expert(
     if (lane == 0)
       for (int topx = 0; topx < ntopx / each_warp_reduce_compute; topx++ ){
         int index = ( stride  ) * ( ntopx / each_warp_reduce_compute) + topx;
-        y[m + index * M] = (__float2half)( sum[topx] );
+        y[m + index * M] = (__float2bfloat16)( sum[topx] );
       }
   }
 }
@@ -180,9 +173,9 @@ __global__ void warp_specialized_gemv_kernel_warp_split_expert(
 const uint32_t table[16] = {
     1, 1, 2, 4, 4, 8, 8, 8, 8, 16, 16, 16, 16, 16, 16, 16,
 };
-void warp_specialized_gemv( const int32_t* d_A, const  half* d_B,
+void warp_specialized_gemv( const half* d_A, const  half* d_B,
      half* d_C,  const int32_t *moe_index, 
-     int ntopx, float* scales, int group_size,  int M, int K, cudaStream_t stream, int kernel_type) {
+     int ntopx, int M, int K, cudaStream_t stream, int kernel_type) {
 
     const int NUM_WARP = 8;
     dim3 block(32, NUM_WARP);
@@ -192,6 +185,12 @@ void warp_specialized_gemv( const int32_t* d_A, const  half* d_B,
     const int each_warp_reduce_compute = 8;
 
     dim3 grid;
+
+ 	 	 const __nv_bfloat16 * d_A_ = reinterpret_cast<const __nv_bfloat16*>(d_A); 
+
+ 	 	 const __nv_bfloat16 * d_B_ = reinterpret_cast<const __nv_bfloat16*>(d_B); 
+
+ 	 	  __nv_bfloat16 * d_C_ = reinterpret_cast< __nv_bfloat16*>(d_C); 
     if (kernel_type == 0)
        grid = dim3((M + NUM_WARP - 1) / NUM_WARP, 1);
     if (kernel_type == 1){
@@ -201,15 +200,13 @@ void warp_specialized_gemv( const int32_t* d_A, const  half* d_B,
     }
 
     int sharedMemSize = K *  sizeof(half); // Shared memory for A
-
- sharedMemSize = sharedMemSize * 8;
- assert(group_size == 128);    
+    
     switch(kernel_type) {
       case 0:
-        warp_specialized_gemv_kernel<NUM_WARP><<<grid, block, sharedMemSize, stream>>>( d_A, d_B,  d_C, moe_index, ntopx,  scales, group_size, M, K);
+        warp_specialized_gemv_kernel<NUM_WARP><<<grid, block, sharedMemSize, stream>>>( d_A_, d_B_,  d_C_, moe_index, ntopx,  M, K);
         break;
       case 1:
-        warp_specialized_gemv_kernel_warp_split_expert<NUM_WARP, each_warp_reduce_compute><<<grid, block, sharedMemSize, stream>>>( d_A, d_B,  d_C, moe_index, ntopx,  scales, group_size, M, K);
+        warp_specialized_gemv_kernel_warp_split_expert<NUM_WARP, each_warp_reduce_compute><<<grid, block, sharedMemSize, stream>>>( d_A_, d_B_,  d_C_, moe_index, ntopx,  M, K);
         break;
       default:
         throw std::invalid_argument("Invalid kernel type");
@@ -222,16 +219,16 @@ extern "C" {
 
 void warp_specialized_gemv_gate_host(cudaStream_t stream, const jc::Tensor& gate_up, 
           const jc::Tensor& vector, jc::Tensor& output,
-          const jc::Tensor&  topk_ids, const jc::Tensor& scales, int group_size, int kernel_type) {
+          const jc::Tensor&  topk_ids, int kernel_type) {
 
           
   int output_dim = gate_up.size(1);
   int hidden_size = gate_up.size(2);
   int ntopx = topk_ids.size(1);
-  warp_specialized_gemv( gate_up.data_ptr<int32_t>(), 
+  warp_specialized_gemv( gate_up.data_ptr<half>(), 
   vector.data_ptr<half>(), 
   output.data_ptr<half>(), 
-  topk_ids.data_ptr<int32_t>(), ntopx, scales.data_ptr<float>(), group_size, output_dim, hidden_size, stream, kernel_type);
+  topk_ids.data_ptr<int32_t>(), ntopx, output_dim, hidden_size, stream, kernel_type);
   CUDA_CHECK_KERNEL_LAUNCH();
 }
 

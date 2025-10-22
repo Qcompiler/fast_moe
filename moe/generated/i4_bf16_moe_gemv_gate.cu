@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h> 
+#include <cuda_bf16.h>
 #include <sys/time.h>
 #include <stdint.h>
 #include <assert.h>
@@ -12,13 +13,13 @@
 template <int NUM_WARP>
 __global__ void warp_specialized_gemv_kernel(
     const int32_t* __restrict__ a,
-    const half* __restrict__ x,
-    half* __restrict__ y,
+    const __nv_bfloat16* __restrict__ x,
+    __nv_bfloat16* __restrict__ y,
     const int32_t *moe_index,
     int ntopx,
     float* scales, int group_size,  int M, int K
 ) {
-    extern __shared__ half shmem_vector[];
+    extern __shared__ __nv_bfloat16 shmem_vector[];
     
     int warp_id = threadIdx.y;
 
@@ -68,8 +69,8 @@ __global__ void warp_specialized_gemv_kernel(
 
  			 float tmp = 0.0;
  			 float* scales_ptr =  (float *) (  (int4 *) scales + target_expect * ( ( M * K * 8) / ( 128 * 4 ) ) +  m * ( (K  * 8) / ( 128 * 4 )) ) ;          int k = (w * WARP_SIZE + lane) * NUM_PER_THREAD;
-          half2 reg_x_0[4];*(((int4 *)reg_x_0)) =  *(((int4 *)shmem_vector) +  k);
-          half2 reg_x_1[4];*(((int4 *)reg_x_1)) =  *(((int4 *)shmem_vector) +  k + 1);
+          __nv_bfloat162 reg_x_0[4];*(((int4 *)reg_x_0)) =  *(((int4 *)shmem_vector) +  k);
+          __nv_bfloat162 reg_x_1[4];*(((int4 *)reg_x_1)) =  *(((int4 *)shmem_vector) +  k + 1);
 
           
           uint2 reg = ld_cs_u32_v2((uint2*)& target_mat[m * K + k + 0]);
@@ -84,7 +85,7 @@ __global__ void warp_specialized_gemv_kernel(
     }
     if (lane == 0)
       for (int topx = 0; topx < ntopx; topx++ ){
-        y[m + topx * M] = (__float2half)( sum[topx]);
+        y[m + topx * M] = (__float2bfloat16)( sum[topx]);
       }
   }
 }
@@ -94,13 +95,13 @@ __global__ void warp_specialized_gemv_kernel(
 template <int NUM_WARP, int each_warp_reduce_compute>
 __global__ void warp_specialized_gemv_kernel_warp_split_expert(
     const int32_t* __restrict__ a,
-    const half* __restrict__ x,
-    half* __restrict__ y,
+    const __nv_bfloat16* __restrict__ x,
+    __nv_bfloat16* __restrict__ y,
     const int32_t *moe_index,
     int ntopx,
     float* scales, int group_size,  int M, int K
 ) {
-    extern __shared__ half shmem_vector[];
+    extern __shared__ __nv_bfloat16 shmem_vector[];
     
     int warp_id = threadIdx.y;
 
@@ -154,8 +155,8 @@ __global__ void warp_specialized_gemv_kernel_warp_split_expert(
 
  			 float tmp = 0.0;
  			 float* scales_ptr =  (float *) (  (int4 *) scales + target_expect * ( ( M * K * 8) / ( 128 * 4 ) ) +  m * ( (K  * 8) / ( 128 * 4 )) ) ;          int k = (w * WARP_SIZE + lane) * NUM_PER_THREAD;
-          half2 reg_x_0[4];*(((int4 *)reg_x_0)) =  *(((int4 *)shmem_vector) +  k);
-          half2 reg_x_1[4];*(((int4 *)reg_x_1)) =  *(((int4 *)shmem_vector) +  k + 1);
+          __nv_bfloat162 reg_x_0[4];*(((int4 *)reg_x_0)) =  *(((int4 *)shmem_vector) +  k);
+          __nv_bfloat162 reg_x_1[4];*(((int4 *)reg_x_1)) =  *(((int4 *)shmem_vector) +  k + 1);
 
           
           uint2 reg = ld_cs_u32_v2((uint2*)& target_mat[m * K + k + 0]);
@@ -171,7 +172,7 @@ __global__ void warp_specialized_gemv_kernel_warp_split_expert(
     if (lane == 0)
       for (int topx = 0; topx < ntopx / each_warp_reduce_compute; topx++ ){
         int index = ( stride  ) * ( ntopx / each_warp_reduce_compute) + topx;
-        y[m + index * M] = (__float2half)( sum[topx] );
+        y[m + index * M] = (__float2bfloat16)( sum[topx] );
       }
   }
 }
@@ -192,6 +193,12 @@ void warp_specialized_gemv( const int32_t* d_A, const  half* d_B,
     const int each_warp_reduce_compute = 8;
 
     dim3 grid;
+
+ 	 	 auto * d_A_ = d_A; 
+
+ 	 	 const __nv_bfloat16 * d_B_ = reinterpret_cast<const __nv_bfloat16*>(d_B); 
+
+ 	 	  __nv_bfloat16 * d_C_ = reinterpret_cast< __nv_bfloat16*>(d_C); 
     if (kernel_type == 0)
        grid = dim3((M + NUM_WARP - 1) / NUM_WARP, 1);
     if (kernel_type == 1){
@@ -206,10 +213,10 @@ void warp_specialized_gemv( const int32_t* d_A, const  half* d_B,
  assert(group_size == 128);    
     switch(kernel_type) {
       case 0:
-        warp_specialized_gemv_kernel<NUM_WARP><<<grid, block, sharedMemSize, stream>>>( d_A, d_B,  d_C, moe_index, ntopx,  scales, group_size, M, K);
+        warp_specialized_gemv_kernel<NUM_WARP><<<grid, block, sharedMemSize, stream>>>( d_A_, d_B_,  d_C_, moe_index, ntopx,  scales, group_size, M, K);
         break;
       case 1:
-        warp_specialized_gemv_kernel_warp_split_expert<NUM_WARP, each_warp_reduce_compute><<<grid, block, sharedMemSize, stream>>>( d_A, d_B,  d_C, moe_index, ntopx,  scales, group_size, M, K);
+        warp_specialized_gemv_kernel_warp_split_expert<NUM_WARP, each_warp_reduce_compute><<<grid, block, sharedMemSize, stream>>>( d_A_, d_B_,  d_C_, moe_index, ntopx,  scales, group_size, M, K);
         break;
       default:
         throw std::invalid_argument("Invalid kernel type");

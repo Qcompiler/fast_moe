@@ -11,9 +11,37 @@ from common.common import  import_code
 from triton.testing import do_bench_cudagraph, do_bench
 
 
-code_gate = import_code("moe_gemv_gate.cu")
-code_down = import_code("moe_gemv_down.cu")
 
+
+
+
+
+device = torch.cuda.current_device()
+
+
+import argparse
+parser = argparse.ArgumentParser(description='Calculate volume of a cylinder')
+# 添加参数
+parser.add_argument('--torch', type=int, default=0)
+parser.add_argument('--new', type=int, default=0)
+parser.add_argument('--naive', type=int, default=0)
+parser.add_argument('--kernel_type', type=int, default=0)
+parser.add_argument('--quant', type=int, default=0)
+parser.add_argument('--bf16',  action='store_true')
+
+# 解析参数
+args = parser.parse_args()
+
+
+code_gate_name = "moe_gemv_gate.cu"
+code_down_name = "moe_gemv_down.cu"
+if args.bf16:
+  code_gate_name = "generated/bf16_" + code_gate_name
+  code_down_name = "generated/bf16_" + code_down_name
+
+
+code_gate = import_code(code_gate_name)
+code_down = import_code(code_down_name)
 
 lib_gate = load_cuda_ops(
   name="gate",
@@ -35,23 +63,6 @@ lib_down = load_cuda_ops(
   build_directory="./build",
 )
 
-device = torch.cuda.current_device()
-
-
-import argparse
-parser = argparse.ArgumentParser(description='Calculate volume of a cylinder')
-# 添加参数
-parser.add_argument('--torch', type=int, default=0)
-parser.add_argument('--new', type=int, default=0)
-parser.add_argument('--naive', type=int, default=0)
-parser.add_argument('--kernel_type', type=int, default=0)
-parser.add_argument('--quant', type=int, default=0)
-
-# 解析参数
-args = parser.parse_args()
-
-
-
 if args.quant == 1:
       lib_quant = load_cuda_ops(
         name="i4_down",
@@ -64,17 +75,20 @@ if args.quant == 1:
       )
 from common.common import compute_moe_gate_up_opt,SiluAndMul,  generate_randint_moe,generate_randint_moe_down,  compute_moe_gate_up_down_opt, gen_quant4, gen_quant4_my, compute_moe_gate_up_down
 for (out_dim, k) in [(1024,  1024), (2048, 2048), (4096, 2048), (4096, 4096), (8192, 4096) ]:
-  dtype = torch.float16
+
 
   num_experts = 16
   topk = 8
 
-  
+  if args.bf16:
+    dtype = torch.bfloat16
+  else:
+    dtype = torch.float16  
 
 
-  gate_up_weight, vector, topk_ids = generate_randint_moe(num_experts, out_dim,  k, topk,  device)
+  gate_up_weight, vector, topk_ids = generate_randint_moe(num_experts, out_dim,  k, topk,  device, dtype)
 
-  down_weight, topk_weight = generate_randint_moe_down(num_experts, out_dim,  k, topk,  device)
+  down_weight, topk_weight = generate_randint_moe_down(num_experts, out_dim,  k, topk,  device, dtype)
 
 
   hidden = compute_moe_gate_up_down(vector, topk_ids, gate_up_weight, down_weight, topk_weight)

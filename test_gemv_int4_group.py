@@ -221,6 +221,7 @@ __global__ void warp_specialized_gemv_kernel_group_1(
     int end = min((warp_id + 1) * iterations_per_warp, total_iterations);
     
     // 每个warp内的线程以WARP_SIZE为步长进行迭代
+    if (warp_id < TOTAL_WARPS)
     for (int i = start + lane; i < end; i += WARP_SIZE) {
         *(((int4 *)shmem_vector) + i) = *(((int4 *)x) + i);
     }

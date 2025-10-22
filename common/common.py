@@ -16,7 +16,7 @@ def generate_randint(k, out_dim, device, dtype = torch.float16):
 
 
 
-def generate_randint_moe(num_experts, intermediate_size, k, top_k, device, dtype = torch.float16):
+def generate_randint_moe(num_experts, intermediate_size, k, top_k, device, dtype):
   
   
     # gate_up_weight  = torch.rand((num_experts,  2 * intermediate_size, k)).to(torch.float16).to(device) - 0.5
@@ -35,7 +35,7 @@ def generate_randint_moe(num_experts, intermediate_size, k, top_k, device, dtype
     return gate_up_weight, vector, topk_ids
 
 
-def generate_randint_moe_down(num_experts, intermediate_size, k, top_k, device, dtype = torch.float16):
+def generate_randint_moe_down(num_experts, intermediate_size, k, top_k, device, dtype):
   
   
     down_weight  = ( torch.rand((num_experts, k, intermediate_size)).to(dtype).to(device) - 0.5 ) / 10
@@ -43,7 +43,7 @@ def generate_randint_moe_down(num_experts, intermediate_size, k, top_k, device, 
     # down_weight  =  - ( torch.ones((num_experts, k, intermediate_size)).to(torch.float16).to(device) )  * 7
 
 
-    topk_weights = (torch.rand(1, top_k, device = device, dtype = torch.float32) - 0.5) / 10
+    topk_weights = (torch.rand(1, top_k, device = device, dtype = torch.float32) - 0.5) / 20
 
     # topk_weights =  torch.ones((1, top_k)).to(torch.float32).to(device)  
 
