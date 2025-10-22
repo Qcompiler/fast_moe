@@ -1,3 +1,10 @@
-1. 把fp16的计算改成 bf16的计算 （工作量 1 周）
+1. 把fp16的计算改成 bf16的计算 （工作量 1 周, done, generated.sh）
 2. 设计一个autotune的自动化的库  （工作量 1 周）
 3. 修改batch size 1 ~ 16  （工作量 4 周 以上）
+
+
+3.5 优化接口和易用性
+4. 集成 fp16和bf16到sglang
+5. 生成 mix 的kernel 测试正确性
+6. 集成 int4 mix 到sglang
+

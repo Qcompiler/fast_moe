@@ -50,7 +50,7 @@ lib_gate = load_cuda_ops(
   func_params=["t_t_t_t"],
   arches=[ "89", "90a"],
   extra_include_paths=["include"],
-  build_directory="./build",
+  build_directory="build",
 )
 
 lib_down = load_cuda_ops(
