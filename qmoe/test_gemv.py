@@ -2,7 +2,6 @@ import torch
 from jitcu import load_cuda_ops
 from triton.testing import do_bench_cudagraph,do_bench
 
-"export PYTHONPATH=/home/chenyidong/newstart/bandwidth/jitcu"
 
 
 code = r"""

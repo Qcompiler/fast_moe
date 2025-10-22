@@ -22,7 +22,8 @@ output = open("generated/i4_" + file.replace("_template",""), 'w+')
 print(data)
 
 for i in range(len(data)):
-    # 处理dequant
+
+
     code = "half2 reg_x_0 = HALF2( shmem_vector  [k + 0]);"
     if  code in data[i]:
         data[i] = data[i].replace(code, "half2 reg_x_0[4];*(((int4 *)reg_x_0)) =  *(((int4 *)shmem_vector) +  k);")
@@ -149,4 +150,10 @@ for i in range(len(data)):
     code = "*(((int4 *)shmem_vector) + i)"
     if code in data[i]:
         data[i] = data[i].replace("K", "(K * 8)")
+
+
+    code = "(warp_id % each_warp_reduce_compute) * K"
+    if  code in data[i]:
+        data[i] = data[i].replace(code, "(warp_id % each_warp_reduce_compute) * (K * 8)")
+        
 out = output.write("".join(data))

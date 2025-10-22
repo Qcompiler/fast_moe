@@ -75,7 +75,7 @@ __global__ void warp_specialized_gemv_kernel_down_split_expert(
     //  if ((blockIdx.x == 0) && (warp_id < each_warp_reduce_compute) && (threadIdx.x == 0))
     //     {
     //       for (int i = 0 ; i < 2; ++i)
-    //       printf("warp = %d, shmem_vector[%d] =%.4f  index = %d\n", warp_id, i, ____nv_bfloat162float((shmem_vector + (warp_id % each_warp_reduce_compute) * K)[i]), index);
+    //       printf("warp = %d, shmem_vector[%d] =%.4f  index = %d\n", warp_id, i, ____nv_bfloat162float((shmem_vector + (warp_id % each_warp_reduce_compute) * (K * 8))[i]), index);
 
     //     }
 
@@ -87,8 +87,8 @@ __global__ void warp_specialized_gemv_kernel_down_split_expert(
 
  			 float tmp = 0.0;
  			 float* scales_ptr =  (float *) (  (int4 *) scales + target_expect * ( ( M * K * 8) / ( 128 * 4 ) ) +  m * ( (K  * 8) / ( 128 * 4 )) ) ;                int k = (w * WARP_SIZE + lane) * NUM_PER_THREAD;
-                __nv_bfloat162 reg_x_0[4];*(((int4 *)reg_x_0)) =  *(((int4 *)( shmem_vector +  (warp_id % each_warp_reduce_compute) * K)) +  k);
-                __nv_bfloat162 reg_x_1[4];*(((int4 *)reg_x_1)) =  *(((int4 *)(shmem_vector + (warp_id % each_warp_reduce_compute) * K)) +  k + 1);
+                __nv_bfloat162 reg_x_0[4];*(((int4 *)reg_x_0)) =  *(((int4 *)( shmem_vector +  (warp_id % each_warp_reduce_compute) * (K * 8))) +  k);
+                __nv_bfloat162 reg_x_1[4];*(((int4 *)reg_x_1)) =  *(((int4 *)(shmem_vector + (warp_id % each_warp_reduce_compute) * (K * 8))) +  k + 1);
 
                 
                 uint2 reg = ld_cs_u32_v2((uint2*)& target_mat[m * K + k + 0]);
@@ -256,14 +256,13 @@ void warp_specialized_gemv_down( const int32_t* d_A, const  half* d_B,
     }
     if (kernel_type == 1)
     {
-       const int each_warp_reduce_compute = 2;
+       const int each_warp_reduce_compute = 4;
        grid = dim3((M + NUM_WARP - 1) / NUM_WARP  * table[each_warp_reduce_compute], 1);
 
        int sharedMemSize = K *  sizeof(half) * each_warp_reduce_compute; // Shared memory for A
 
  sharedMemSize = sharedMemSize * 8;
- assert(group_size == 128);        warp_specialized_gemv_kernel_down_split_expert<NUM_WARP, each_warp_reduce_compute>
-        <<<grid, block,  sharedMemSize, stream>>>( d_A_, d_B_,  d_C_,  topk_weight, moe_index, ntopx,  scales, group_size, M, K);
+ assert(group_size == 128);        warp_specialized_gemv_kernel_down_split_expert<NUM_WARP, each_warp_reduce_compute><<<grid, block,  sharedMemSize, stream>>>( d_A_, d_B_,  d_C_,  topk_weight, moe_index, ntopx,  scales, group_size, M, K);
 
     }
 
@@ -283,6 +282,10 @@ void warp_specialized_gemv_down_host(cudaStream_t stream, const jc::Tensor& down
   int output_dim = down.size(1);
   int hidden_size = down.size(2); 
   int ntopx = input.size(0);
+
+  // printf("ntopx = %d", ntopx);
+  // printf("hidden = %d", hidden_size);
+  // printf("output = %d", output_dim);
 
   warp_specialized_gemv_down( down.data_ptr<int32_t>(), 
   input.data_ptr<half>(), output.data_ptr<half>(), topk_weight.data_ptr<float>(), 

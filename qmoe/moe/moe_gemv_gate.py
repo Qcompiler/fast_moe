@@ -1,7 +1,8 @@
 import torch
 from jitcu import load_cuda_ops
-
-from common.common import  import_code
+from qmoe.common.common import  gen_quant4_my
+from qmoe.common.common import generate_randint_moe, compute_moe_gate_up_opt, gen_quant4, gen_quant4_my, compute_moe_gate_up
+from qmoe.common.common import  import_code
 from triton.testing import do_bench_cudagraph,do_bench
 
 
@@ -62,7 +63,8 @@ lib = load_cuda_ops(
   extra_include_paths=["include"],
   build_directory="./build",
 )
-from common.common import generate_randint_moe, compute_moe_gate_up_opt, gen_quant4, gen_quant4_my, compute_moe_gate_up
+
+
 for (out_dim, k) in [(512,  2048),   (2048, 2048) , (2048, 4096), (4096, 4096), (4096, 8192) ]:
 
   num_experts = 16
@@ -93,7 +95,7 @@ for (out_dim, k) in [(512,  2048),   (2048, 2048) , (2048, 4096), (4096, 4096), 
 
   if args.quant == 1:
       group_size = 128
-      from common.common import  gen_quant4_my
+      
 
       n = gate_up_weight.shape[1]
       k = gate_up_weight.shape[2]

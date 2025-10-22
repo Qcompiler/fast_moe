@@ -239,12 +239,11 @@ void warp_specialized_gemv_down( const half* d_A, const  half* d_B,
     }
     if (kernel_type == 1)
     {
-       const int each_warp_reduce_compute = 2;
+       const int each_warp_reduce_compute = 4;
        grid = dim3((M + NUM_WARP - 1) / NUM_WARP  * table[each_warp_reduce_compute], 1);
 
        int sharedMemSize = K *  sizeof(half) * each_warp_reduce_compute; // Shared memory for A
-        warp_specialized_gemv_kernel_down_split_expert<NUM_WARP, each_warp_reduce_compute>
-        <<<grid, block,  sharedMemSize, stream>>>( d_A, d_B,  d_C,  topk_weight, moe_index, ntopx,  M, K);
+        warp_specialized_gemv_kernel_down_split_expert<NUM_WARP, each_warp_reduce_compute><<<grid, block,  sharedMemSize, stream>>>( d_A, d_B,  d_C,  topk_weight, moe_index, ntopx,  M, K);
 
     }
 
@@ -264,6 +263,10 @@ void warp_specialized_gemv_down_host(cudaStream_t stream, const jc::Tensor& down
   int output_dim = down.size(1);
   int hidden_size = down.size(2); 
   int ntopx = input.size(0);
+
+  // printf("ntopx = %d", ntopx);
+  // printf("hidden = %d", hidden_size);
+  // printf("output = %d", output_dim);
 
   warp_specialized_gemv_down( down.data_ptr<half>(), 
   input.data_ptr<half>(), output.data_ptr<half>(), topk_weight.data_ptr<float>(), 
