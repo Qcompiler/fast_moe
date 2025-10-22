@@ -1,0 +1,10 @@
+build/
+__pycache__/
+dist/*
+FastGEMV/
+*-info/
+old/
+objs/
+build
+backup/
+tmp/
