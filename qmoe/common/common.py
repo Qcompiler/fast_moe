@@ -8,9 +8,11 @@ torch.random.manual_seed(seed)
 
 
 def generate_randint(k, out_dim, device, dtype = torch.float16):
-  weight  = torch.randint(low=-8, high=8, size=(out_dim, k)).to(torch.float16).to(device)
-#   weight  = torch.ones((out_dim, k)).to(torch.float16).to(device)  / 10
-#   vector =  torch.ones((1, k)).to(torch.float16).to(device) / 100
+#   weight  = torch.randint(low=-8, high=8, size=(out_dim, k)).to(torch.float16).to(device)
+  weight  = - torch.ones((out_dim, k)).to(torch.float16).to(device) * 8
+#   weight[out_dim-3,:] = 0
+  weight[0, 0:7] = torch.randint(low=-8, high=8, size=(1, 7)).to(torch.float16).to(device)
+#   vector =  torch.ones((1, k)).to(torch.float16).to(device) 
   vector =  torch.randint(low=-1, high=2, size=(1, k)).to(torch.float16).to(device) / 100
   return weight, vector
 
@@ -397,7 +399,34 @@ class MyLayer(nn.Module):
 
         self.B[:, :] = q.to(self.B.device)
         # self.s[:, :] = s.to(self.s.device)
+    def pack_without_reorder(self, linear, scales, tile):
 
+        
+        
+        k = self.k
+        
+        interleave = []
+        for i in range(k//8):
+            out = [0, 1, 2, 3, 4, 5, 6, 7]
+            for j in range(8):
+                out[j] = out[j] + 8 * i
+            interleave += out
+        interleave = np.array(interleave)
+        w = linear
+        
+        res = w[:,interleave]
+      
+
+      
+        q = np.zeros((res.shape[0], res.shape[1] // 8), dtype=np.uint32)
+   
+        res = res.cpu().numpy().astype(np.uint32)
+
+        for i in range(8):
+            q |= res[:, i::8] << 4 * i
+        q = torch.from_numpy(q.astype(np.int32)).to(w.device)
+
+        self.B[:, :] = q.to(self.B.device)
 def gen_quant4_my(n, k, w, groupsize=-1,  tile = 1):
     if groupsize == -1:
         groupsize = k
@@ -446,6 +475,53 @@ def gen_quant4_my(n, k, w, groupsize=-1,  tile = 1):
 
     return q, s
 
+def gen_quant4_my_no_reorder(n, k, w, groupsize=-1,  tile = 1):
+    if groupsize == -1:
+        groupsize = k
+    DEV = w.device   
+    maxq = 2 ** 4   # 4-bit量化，最大值15
+    n, k = w.shape  # 原始权重矩阵形状
+
+    # 计算需要的组数（向上取整）
+    num_groups = (k + (groupsize-1)) // groupsize  # 等价于 math.ceil(k / 128)
+
+    # 填充权重矩阵，使k能被128整除
+    padded_k = num_groups * groupsize
+    if k % groupsize != 0:
+        w_padded = torch.nn.functional.pad(w, (0, padded_k - k))
+    else:
+        w_padded = w
+
+    # 将权重矩阵重塑为 (n, num_groups, 128)
+    w_reshaped = w_padded.reshape(n, num_groups, groupsize)
+    # 计算每个组的缩放因子s (n, num_groups, 1)
+    s = torch.max(torch.abs(w_reshaped), dim=2, keepdim=True)[0]
+    s *= 2 / maxq  # 缩放因子范围调整
+    # 量化过程
+    linear = torch.clone(w_reshaped)
+    linear = torch.round(linear / s).int()
+
+    linear += (maxq + 1) // 2  # 添加零点偏移
+
+
+    linear = torch.clamp(linear, 0, maxq - 1)
+    # 将量化的权重和缩放因子重塑回原始形状
+    linear = linear.reshape(n, -1)[:, :k]  # 移除填充并恢复原始k维度
+    s = s.reshape(n, -1).contiguous()  # 缩放因子形状为 (n, num_groups)  
+
+    # Workaround to test some special cases that are forbidden by the API
+    layer = MyLayer(k, n, groupsize=groupsize, tile = tile)
+
+    layer.k = k
+    layer.n = n
+    layer.groupsize = groupsize
+    layer.B = torch.empty((n // tile , k  * tile // 8), dtype=torch.int, device=DEV)
+    layer.pack_without_reorder(linear, s.t(), tile = tile)
+    q = layer.B
+
+
+
+    return q, s
 
 def compute_moe(x, topk_ids, down_weight, gate_up, topk_weights):
 

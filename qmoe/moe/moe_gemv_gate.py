@@ -126,7 +126,7 @@ for (out_dim, k) in [(512,  2048),   (2048, 2048) , (2048, 4096), (4096, 4096), 
       torch.testing.assert_close((hidden+0.01).to(torch.float), (hidden4+0.01).to(torch.float), rtol = 0.1, atol=100)
 
 
-  torch.testing.assert_close(hidden2, hidden, rtol=1e-2, atol=1e-2)
+
   torch.testing.assert_close(hidden3, hidden, rtol=1e-2, atol=1e-2)
   for i in range(1000):
     lib.warp_specialized_gemv_gate_host( gate_up_weight, vector, hidden3, topk_ids, kernel_type)

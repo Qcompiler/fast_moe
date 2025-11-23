@@ -222,8 +222,133 @@ void warp_specialized_gemv_host(cudaStream_t stream, jc::Tensor& weight,
 
 """
 
+import torch, math, random, copy
+from torch import Tensor
+import triton
+import triton.language as tl
 
 
+
+@triton.jit
+def dequantize(
+    b,
+    q_shift
+
+):
+    #Unpack
+    unpack_mask = 15
+    b = (b >> q_shift) & unpack_mask # int32 -> int32
+    scales = None
+    zeros = None
+    # b = tl.fma(b.to(tl.float32), scales, zeros) #Asymmetric (Grouped - b*scales + zeros)
+    b = b.to(tl.float32)
+    return b
+
+
+
+
+
+@triton.jit
+def gemv_int4_kernel(
+    A_ptr, output_ptr,
+    m, k,
+    stride_cm, stride_cn,
+    stride_am, stride_an,
+    BLOCK_SIZE: tl.constexpr,
+    unpack_mask: tl.constexpr,
+    a_evict: tl.constexpr = 'evict_last',
+    b_evict: tl.constexpr = 'evict_first',
+):
+    row_id = tl.program_id(0)
+    elements_per_sample = 8
+    W_nbits = 4
+    
+  
+    # off = 0
+    for kk in range(0, tl.cdiv(k, BLOCK_SIZE)):
+
+
+      offs_k =   tl.arange(0, BLOCK_SIZE)
+
+      mask_int4 = offs_k < k
+      
+      A_offset = row_id * stride_am + (offs_k // 8) * stride_an
+
+      output_offset = row_id * stride_cm + (offs_k) * stride_cn
+      a = tl.load(A_ptr + A_offset, mask=mask_int4, eviction_policy=b_evict)
+
+      q_shift = ((offs_k % elements_per_sample) * W_nbits).to(tl.int32)
+
+      a = (a >> q_shift) & unpack_mask - 8 # int32 -> int32
+
+      a = a.to(tl.float32) 
+
+      tl.store(output_ptr + output_offset, a)
+
+@triton.jit
+def gemv_int4_kernel_(
+    A_ptr, x_ptr, y_ptr,
+    scale_ptr,
+    m, k,
+    k_int4,
+    stride_am, stride_an,
+    BLOCK_SIZE: tl.constexpr,
+    unpack_mask: tl.constexpr,
+    a_evict: tl.constexpr = 'evict_last',
+    b_evict: tl.constexpr = 'evict_first',
+):
+    row_id = tl.program_id(0)
+    acc = 0.0
+    elements_per_sample = 8
+    W_nbits = 4
+    pid_k = tl.program_id(axis=1)
+    
+    A_ptrs  = A_ptr + ((offs_bk // elements_per_sample) * stride_bk + offs_bn* stride_bn)
+    # off = 0
+    for kk in range(0, tl.cdiv(k, BLOCK_SIZE)):
+
+      x_offset = kk * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+      mask_activation = x_offset < k
+      # x_offset = [0, 1, 2, 3, ..., block_size]
+      x = tl.load(x_ptr + x_offset, mask=mask_activation, eviction_policy=a_evict)
+
+      offs_k =   tl.arange(0, BLOCK_SIZE)
+      # cols = off
+      # offs_k_A = offs_k + kk * BLOCK_SIZE
+
+      mask_int4 = offs_k < k
+      
+      A_offset = row_id * stride_am + (offs_k // 8) * stride_an
+  
+      a = tl.load(A_ptr + A_offset, mask=mask_int4, eviction_policy=b_evict)
+
+      q_shift = ((offs_k % elements_per_sample) * W_nbits).to(tl.int32)
+
+      a = (a >> q_shift) & unpack_mask - 8 # int32 -> int32
+
+      a = a.to(tl.float32) 
+
+      acc += tl.sum(x * a, axis=0) 
+    
+    tl.store(y_ptr + row_id, acc)
+
+def gemv_int4(A: torch.Tensor, vector: torch.Tensor, output, ptx = 0):
+    n, _ = A.shape
+    k = vector.shape[1] # [m, k ]
+    device = A.device
+    stride_ak, stride_an = A.stride()
+    assert vector.shape[1] == A.shape[1] * 8, "Vector and input tensor shape mismatch"
+    assert A.device == device and vector.device == device and output.device == device, "Tensors must be on CUDA"
+    grid = lambda meta: (n, 1)
+    
+    
+    # kernel = gemv_int4_kernel[grid](A, vector, output, None, n, k, A.shape[1], stride_ak, stride_an,  
+    #                             BLOCK_SIZE = 1024, unpack_mask = 15)
+         
+    gemv_int4_kernel[grid](A, output, n, k,  stride_cm, stride_cn, 
+                            stride_ak, stride_an,  
+                            BLOCK_SIZE = 1024, unpack_mask = 15)
+    return kernel
 
 lib = load_cuda_ops(
   name="test",
@@ -242,11 +367,25 @@ import argparse
 parser = argparse.ArgumentParser(description='Calculate volume of a cylinder')
 # 添加参数
 parser.add_argument('--marlin', type=int, default=0)
+parser.add_argument('--cuda', type=int, default=0)
+parser.add_argument('--triton', type=int, default=0)
+parser.add_argument('--bitblas', type=int, default=0)
+parser.add_argument('--gemlite', type=int, default=0)
+
+
+
+
 # 解析参数
 args = parser.parse_args()
 
+
+if args.bitblas == 1:
+  import bitblas
+
+  
+
 from common.common import generate_randint, gen_quant4, gen_quant4_my
-for (out_dim, k) in [ (2048, 2048), (2048, 4096), (4096, 4096), (12288, 4096), (8192, 8192) ]:
+for (out_dim, k) in [ (4096, 2048), (2048, 4096), (4096, 4096), (12288, 4096), (8192, 8192) ]:
   dtype = torch.float16
 
 
@@ -275,18 +414,110 @@ for (out_dim, k) in [ (2048, 2048), (2048, 4096), (4096, 4096), (12288, 4096), (
   lib.warp_specialized_gemv_host(q_weight, vector, c, scales)
 
   #------------------------------------mixq---------------------------------
- 
+  c_triton = torch.zeros((1, out_dim), dtype=dtype, device=device)
+  gemv_int4(q_weight, vector, c_triton)
+
+  # print(torch.mm(vector, weight.t()))
+  print(c_triton)
+  print(c_triton * scales.T)
+  print(c)
+  print(C_i4mar)
+  
   #------------------------------------mixq----------------------------------
   torch.testing.assert_close(c, C_i4mar, rtol=1e-2, atol=1e-2)
-
-
+  torch.testing.assert_close(c, c_triton * scales.T.to(torch.float16), rtol=1e-2, atol=1e-2)
+  # exit()
+  
   torch.cuda.synchronize()
+
+  if args.bitblas == 1:
+    matmul_config = bitblas.MatmulConfig(
+      M=1,  # M dimension
+      N=out_dim,  # N dimension
+      K=k,  # K dimension
+      A_dtype="float16",  # activation A dtype
+      W_dtype="int4",  # weight W dtype
+      accum_dtype="float16",  # accumulation dtype
+      out_dtype="float16",  # output dtype
+      layout="nt",  # matrix layout, "nt" indicates the layout of A is non-transpose and the layout of W is transpose
+      with_bias=False,  # bias
+      group_size=-1,  # setting for grouped quantization
+      with_scaling=False,  # setting for scaling factor
+      with_zeros=False,  # setting for zeros
+      zeros_mode=None,  # setting for how to calculating zeros
+    )
+    matmul = bitblas.Matmul(config=matmul_config, enable_tuning = False)
+
+
+
+    input_shape = (1, k)
+    weight_shape = (out_dim, k)
+    scaling_shape = (out_dim, k // 128)
+    zeros_shape = (out_dim, k // 128)
+    output_shape = (1, out_dim)
+    scaling = torch.rand(scaling_shape, dtype=torch.float16).cuda()
+    zeros = torch.rand(zeros_shape, dtype=torch.float16).cuda()
+
+    # Create input tensor
+    input_tensor = torch.rand(input_shape, dtype=torch.float16).cuda()
+
+    # Create and transform weight tensor
+    weight_tensor = torch.randint(0, 7, weight_shape, dtype=torch.int8).cuda()
+    weight_tensor_int4 = matmul.transform_weight(weight_tensor)
+
+    output_tensor = matmul(input_tensor, weight_tensor_int4, scale=scaling, zeros=zeros)
+
+
+  if args.gemlite == 1:
+    from gemlite.helper import *
+    in_features = k
+    out_features = out_dim
+    device, dtype = 'cuda:0', torch.float16
+    group_size = 128
+    linear = torch.nn.Linear(in_features, out_features, bias=False, device=None, dtype=torch.float16).cuda()
+
+    from gemlite.helper import GemLiteLinearTriton, DType
+    from hqq.core.quantize import HQQLinear, BaseQuantizeConfig
+
+    linear.weight.data =  weight
+    orig_shape   = (out_features, in_features)
+    quant_config   = BaseQuantizeConfig(nbits=4, group_size=group_size)
+
+    # print(quant_config)
+    hqq_layer    = HQQLinear(linear, quant_config=quant_config,
+                              compute_dtype=torch.float16, device=device, 
+                              del_orig=False) 
+
+
+    gemlite_linear = GemLiteLinearTriton(W_nbits=4, 
+                                        group_size=group_size, in_features=in_features, out_features=out_features, 
+                                        input_dtype=DType.FP16, output_dtype=DType.FP16)
+
+    # print(hqq_layer.meta['scale'])
+    # exit()
+    gemlite_linear.pack(hqq_layer.unpack(dtype=torch.uint8).view(orig_shape),
+                        hqq_layer.meta['scale'].clone(), 
+                        hqq_layer.meta['zero'].clone(), bias=None)
+    
+    matmul_type = "GEMV_REVSPLITK"
+    # matmul_type = "GEMM"
+    matmul_type = "GEMV_REVSPLITK"
+    output = gemlite_linear.forward_manual(vector, matmul_type=matmul_type)
+
   with torch.cuda.stream(torch.cuda.Stream()):
     if args.marlin == 1:
       ms = do_bench(lambda: marlin.mul(vector, B, C_i4mar, s, workspace, thread_k, thread_n, -1))
-    else:
-      ms = do_bench(lambda: lib.warp_specialized_gemv_host(q_weight, vector, c, scales))
-    
+    if args.cuda == 1:
+      ms = do_bench_cudagraph(lambda: lib.warp_specialized_gemv_host(q_weight, vector, c, scales))
+    if args.triton == 1:
+      ms = do_bench_cudagraph(lambda: gemv_int4(q_weight, vector, c_triton))
+    if args.bitblas == 1:
+      ms = do_bench_cudagraph(lambda: matmul(input_tensor, weight_tensor_int4, scale=scaling, zeros=zeros))
+    if args.gemlite == 1:
+
+      ms = do_bench_cudagraph(lambda: gemlite_linear.forward_manual(vector, matmul_type=matmul_type))
+
+      
     # ms = do_bench(lambda: torch.mm(vector, weight.T))
 
 

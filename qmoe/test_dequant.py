@@ -9,6 +9,7 @@ seed = 0
 np.random.seed(seed)
 torch.random.manual_seed(seed)
 
+
 code = r"""
 
 #include "jitcu/all.h"
@@ -73,10 +74,8 @@ __device__ inline void dequant(int q, half2* frag_b) {
   const int LO = 0x000f000f;
   const int HI = 0x00f000f0;
   const int EX = 0x64006400;
-  // Guarantee that the `(a & b) | c` operations are LOP3s.
   int lo = lop3<(0xf0 & 0xcc) | 0xaa>(q, LO, EX);
   int hi = lop3<(0xf0 & 0xcc) | 0xaa>(q, HI, EX);
-  // We want signed int4 outputs, hence we fuse the `-8` symmetric zero point directly into `SUB` and `ADD`.
   const int SUB = 0x64086408;
   const int MUL = 0x2c002c00;
   const int ADD = 0xd480d480;
@@ -93,21 +92,18 @@ __device__ inline void dequant(int q, half2* frag_b) {
 }
 
 
-template < int WARP_PER_ROW , int TOTAL_WARPS, int N_Outliers_Per_Thread = 2>
-__global__ void warp_specialized_gemv_kernel_mix(
+
+
+template < int WARP_PER_ROW , int TOTAL_WARPS>
+__global__ void warp_specialized_gemv_kernel(
     int32_t* __restrict__ a,
     half* __restrict__ x,
     half* __restrict__ y,
     float * scales,
-    half *__restrict__ fpweight,
-    const int32_t*  ind,
     int M, int K
 ) {
     extern __shared__ half shmem_vector[];
-    float sum[WARP_PER_ROW];
-    for (int i = 0; i < WARP_PER_ROW; ++i){
-        sum[i] = 0.0;
-    }
+    
     int warp_id = threadIdx.y;
 
     // 每个线程负责4个元素，一个warp覆盖128个元素
@@ -119,39 +115,35 @@ __global__ void warp_specialized_gemv_kernel_mix(
   
     int total_iterations = K / 8  * ((sizeof(int32_t) / sizeof(int8_t)) * 2);
     // 每个warp需要处理的迭代次数
-    int iterations_per_warp = (total_iterations + TOTAL_WARPS - 1) / TOTAL_WARPS;
+
+    const int TOTAL_WARPS_ = 8;
+    int iterations_per_warp = (total_iterations + TOTAL_WARPS_ - 1) / TOTAL_WARPS_;
     
     // 计算当前warp的起始迭代索引
     int start = warp_id * iterations_per_warp;
     // 计算当前warp的结束迭代索引（不包含）
     int end = min((warp_id + 1) * iterations_per_warp, total_iterations);
     
-
-
-
-
     // 每个warp内的线程以WARP_SIZE为步长进行迭代
-    if (warp_id < TOTAL_WARPS)
+    if (warp_id < TOTAL_WARPS_)
     for (int i = start + lane; i < end; i += WARP_SIZE) {
         *(((int4 *)shmem_vector) + i) = *(((int4 *)x) + i);
     }
 
     const int NUM_PER_THREAD = 2;
     int NUM_WARPS = (((K + WARP_SIZE - 1) / WARP_SIZE) + NUM_PER_THREAD - 1) / NUM_PER_THREAD;
+    float sum[WARP_PER_ROW];
 
-    half *start_cache = ( half * ) ( (uint64_t *)fpweight + ( m ) * (128 / 4)  + lane );
-    for (int i = 0  ; i < 4 ; ++i){
-        half outlier = start_cache[i];
-        int ind1 = ind[lane * 4 + i];
-        half v = x[ind1];
-        sum[0] +=   float(v) * float(outlier);  
+    for (int i = 0; i < WARP_PER_ROW; ++i){
+        sum[i] = 0.0;
     }
 
-
-    __syncthreads();  
-  if (m < M) {
     
 
+    __syncthreads();
+
+  if (m < M) {
+    
 
       #pragma unroll  4
         for (int w = 0; w < NUM_WARPS ; ++w) {
@@ -167,12 +159,10 @@ __global__ void warp_specialized_gemv_kernel_mix(
             for (int i = 0; i < WARP_PER_ROW; ++i){
                
                 uint2 reg = ld_cs_u32_v2((uint2*)&a[( m + i ) * K + k + 0]);
-
                 int reg_a_0 = *(reinterpret_cast<int *>(&reg)  ); 
                 int reg_a_1 = *(reinterpret_cast<int *>(&reg) + 1 );
                 int reg_a_0_shift = reg_a_0 >> 8;
-                int reg_a_1_shift2 = reg_a_1 >> 8;
-                
+                int reg_a_1_shift2 = reg_a_1 >> 8;                
                 half2 frag_b0[4];
                 half2 frag_b1[4];
                 dequant(reg_a_0, frag_b0);
@@ -180,63 +170,51 @@ __global__ void warp_specialized_gemv_kernel_mix(
                 dequant(reg_a_1, frag_b1);
                 dequant(reg_a_1_shift2, frag_b1 + 2);
 
+                #pragma unroll  4
                 for (int kk = 0; kk < 4; ++kk){
                   sum[i] += (float(reg_x_0[kk].x) * float(frag_b0[kk].x) + float(reg_x_0[kk].y) * float(frag_b0[kk].y) +
                         float( reg_x_1[kk].x) * float(frag_b1[kk].x) + float(reg_x_1[kk].y) * float(frag_b1[kk].y));
                 }
             }
-
-        }
-
-
+        
       }
 
       for (int i = 0; i < WARP_PER_ROW; ++i)
           sum[i] = warp_reduce_sum_f32<WARP_SIZE>(sum[i]);
-
-
-      
-
-      
       if (lane == 0){
         for (int i = 0; i < WARP_PER_ROW; ++i)
-            y[m + i] = (__float2half)(( sum[i]) * scales[m + i]);
+            y[m + i] = (__float2half)(sum[i] * scales[m + i]);
       }
     
-    
+    }
 
 
 }
 
-void warp_specialized_gemv_mix( int32_t* d_A,  half* d_B, half* d_C, 
-    float* scales, half* fpweight, int32_t * ind, int M, int K, cudaStream_t stream) {
+void warp_specialized_gemv( int32_t* d_A,  half* d_B, half* d_C, float* scales, int M, int K, cudaStream_t stream) {
 
     const int NUM_WARP = 8;
     const int WARP_PER_ROW = 1;
     dim3 block(32, NUM_WARP);
     dim3 grid((M + NUM_WARP * WARP_PER_ROW - 1) / (NUM_WARP * WARP_PER_ROW), 1);
 
-    const int N_Outliers_Per_Thread = 4;
+
     int sharedMemSize = K *  sizeof(half) * 8; // Shared memory for A
-    warp_specialized_gemv_kernel_mix<WARP_PER_ROW, NUM_WARP, N_Outliers_Per_Thread><<<grid, block, 
-    sharedMemSize, stream>>>( d_A, d_B,  d_C, scales, fpweight, ind,  M, K);
+    
+    warp_specialized_gemv_kernel<WARP_PER_ROW, NUM_WARP><<<grid, block, 
+    sharedMemSize, stream>>>( d_A, d_B,  d_C, scales,  M, K);
 }
 extern "C" {
 
-void warp_specialized_gemv_host_mix(cudaStream_t stream, jc::Tensor& weight, 
-          const jc::Tensor& vector, const jc::Tensor& output, 
-          const jc::Tensor& scales,
-          const jc::Tensor& fpweight,
-          const jc::Tensor& ind) {
+void warp_specialized_gemv_host(cudaStream_t stream, jc::Tensor& weight, 
+          const jc::Tensor& vector, const jc::Tensor& output, const jc::Tensor& scales) {
 
   int M = weight.size(0);
   int K = weight.size(1);
 
-  warp_specialized_gemv_mix( weight.data_ptr<int32_t>(), 
+  warp_specialized_gemv( weight.data_ptr<int32_t>(), 
   vector.data_ptr<half>(), 
-  output.data_ptr<half>(), scales.data_ptr<float>(),
-  fpweight.data_ptr<half>(), 
-   ind.data_ptr<int32_t>(),  M, K, stream);
+  output.data_ptr<half>(), scales.data_ptr<float>(),  M, K, stream);
   CUDA_CHECK_KERNEL_LAUNCH();
 }
 
@@ -244,15 +222,85 @@ void warp_specialized_gemv_host_mix(cudaStream_t stream, jc::Tensor& weight,
 
 """
 
+import torch, math, random, copy
+from torch import Tensor
+import triton
+import triton.language as tl
 
 
+
+@triton.jit
+def dequantize(
+    b,
+    q_shift
+
+):
+    #Unpack
+    unpack_mask = 15
+    b = (b >> q_shift) & unpack_mask # int32 -> int32
+    scales = None
+    zeros = None
+    # b = tl.fma(b.to(tl.float32), scales, zeros) #Asymmetric (Grouped - b*scales + zeros)
+    b = b.to(tl.float32)
+    return b
+
+
+
+
+
+@triton.jit
+def gemv_int4_kernel(
+    A_ptr, output_ptr,
+    m, k,
+    stride_cm, stride_cn,
+    stride_am, stride_an,
+    BLOCK_SIZE: tl.constexpr,
+    unpack_mask: tl.constexpr,
+    a_evict: tl.constexpr = 'evict_last',
+    b_evict: tl.constexpr = 'evict_first',
+):
+    row_id = tl.program_id(0)
+    elements_per_sample = 8
+    W_nbits = 4
+    
+    offs_k =   tl.arange(0, BLOCK_SIZE)    
+
+    A_offset = row_id * stride_am + (offs_k // 8) * stride_an
+    a = tl.load(A_ptr + A_offset,  eviction_policy=a_evict)
+
+    q_shift = ((offs_k % elements_per_sample) * W_nbits).to(tl.int32)
+    a = ((a >> q_shift) & unpack_mask) - 8 # int32 -> int32
+    a = a.to(tl.float16)
+
+
+    output_offset = row_id * stride_cm + (offs_k) * stride_cn
+    tl.store(output_ptr + output_offset, a)
+
+
+
+def gemv_int4(A: torch.Tensor, vector: torch.Tensor, output, ptx = 0):
+    n, _ = A.shape
+    k = vector.shape[1] # [m, k ]
+    device = A.device
+    stride_ak, stride_an = A.stride()
+    stride_cm, stride_cn = output.stride()
+    assert vector.shape[1] == A.shape[1] * 8, "Vector and input tensor shape mismatch"
+    assert A.device == device and vector.device == device and output.device == device, "Tensors must be on CUDA"
+    grid = lambda meta: (n, 1)
+    
+    
+
+    gemv_int4_kernel[grid](A, output, n, k,  stride_cm, stride_cn, 
+                            stride_ak, stride_an,  
+                            BLOCK_SIZE = 1024, unpack_mask = 15)
+    return 
 
 lib = load_cuda_ops(
   name="test",
   sources=code,
-  func_names=["warp_specialized_gemv_host_mix"],
-  func_params=["t_t_t_t_t_t"],
-  arches=[ "90a", "89"],
+  func_names=["warp_specialized_gemv_host"],
+  func_params=["t_t_t_t"],
+  arches=[ "89", "90a"],
   extra_include_paths=["3rd/cutlass/include"],
   build_directory="./build",
 )
@@ -261,66 +309,52 @@ device = torch.cuda.current_device()
 
 
 import argparse
-from common.common import generate_randint, gen_quant4, gen_quant4_my
 parser = argparse.ArgumentParser(description='Calculate volume of a cylinder')
 # 添加参数
 parser.add_argument('--marlin', type=int, default=0)
+parser.add_argument('--cuda', type=int, default=0)
+parser.add_argument('--triton', type=int, default=0)
+parser.add_argument('--bitblas', type=int, default=0)
+parser.add_argument('--gemlite', type=int, default=0)
+
+
+
+
 # 解析参数
 args = parser.parse_args()
 
 
-for (out_dim, k) in [ (2048, 2048), (2048, 4096), (4096, 4096), (12288, 4096), (8192, 8192) ]:
+if args.bitblas == 1:
+  import bitblas
+
+  
+
+from common.common import generate_randint, gen_quant4, gen_quant4_my_no_reorder
+for (out_dim, k) in [ (1024, 1024)]:
   dtype = torch.float16
 
-  weight, vector = generate_randint(k, out_dim, device)
+
   c = torch.zeros((1, out_dim), dtype=dtype, device=device)
-  grand = torch.mm(vector, weight.T)
-  # print(c)
 
-  #-------------------------------------marlin----------------------------
-  import marlin
-  workspace = torch.zeros(out_dim // 128 * 16, device=device)
-  C_i4mar = torch.zeros((1, out_dim), dtype=dtype, device=device)
-  thread_k = 64
-  thread_n = 256
-  _, B, s = gen_quant4(k, out_dim, weight.t().contiguous(),   groupsize=-1)  
-  marlin.mul(vector, B, C_i4mar, s, workspace, thread_k, thread_n, -1)
-
-  torch.cuda.synchronize()
+  weight, vector = generate_randint(k, out_dim, device)
 
 
 
-  #------------------------------------mixq------------------------------
-  n_outliers = 128
-  ind = torch.as_tensor(range(n_outliers)).to(torch.int32).cuda()
-  weight_cache_ =   weight[:,ind].contiguous()
-  weight[:,ind] = 0
+  #------------------------------------marlin------------------------------
+  # q_weight, scales  = gen_quant4_my(out_dim, k, torch.clone(weight),   groupsize = -1, tile = 1)
 
-
-  
-  q_weight, scales  = gen_quant4_my(out_dim, k, torch.clone(weight),   groupsize = -1, tile = 1)
-  weight_cache = weight_cache_ / scales
+  q_weight, scales  = gen_quant4_my_no_reorder(out_dim, k, torch.clone(weight),   groupsize = -1, tile = 1)
   scales = scales.to(torch.float32)
-#  
-  lib.warp_specialized_gemv_host_mix(q_weight, vector, c, scales, weight_cache, ind)
 
-  #------------------------------------mixq----------------------------------
-  torch.testing.assert_close(c, C_i4mar, rtol=1e-2, atol=1e-1)
+  #------------------------------------mixq---------------------------------
+  c_triton = torch.zeros((out_dim, k), dtype=dtype, device=device)
+  gemv_int4(q_weight, vector, c_triton)
 
-
-  torch.cuda.synchronize()
-  with torch.cuda.stream(torch.cuda.Stream()):
-    if args.marlin == 1:
-      ms = do_bench(lambda: marlin.mul(vector, B, C_i4mar, s, workspace, thread_k, thread_n, -1))
-    else:
-      ms = do_bench(lambda: lib.warp_specialized_gemv_host_mix(q_weight, vector, c, scales, weight_cache, ind))
-    
-    # ms = do_bench(lambda: torch.mm(vector, weight.T))
-
-
+  print(scales)
+  print(weight[0,0:12])
+  print(c_triton[0,0:12])
   
-  # double gflops = (2.0 * M * N) / (kernel_time * 1e9);  // 每个元素需要1次乘法和1次加法
-  # double bandwidth_gb_s = ((M * N + M + N) * sizeof(half) * 1e-9) / kernel_time;
-  gb = (out_dim * k + out_dim + k) * 2 / 1024 / 1024 / 1024
-  bandwidth_gb_s = (gb) / ms * 1000
-  print(f"{bandwidth_gb_s=} GB/s, {gb} GB, {ms} ms")
+
+
+
+

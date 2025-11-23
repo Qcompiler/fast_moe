@@ -2,7 +2,10 @@ import torch
 from jitcu import load_cuda_ops
 from triton.testing import do_bench_cudagraph,do_bench
 
-
+import torch
+import triton
+import triton.language as tl
+torch.manual_seed(0)
 
 code = r"""
 
@@ -170,37 +173,109 @@ lib = load_cuda_ops(
 device = torch.cuda.current_device()
 
 
+
+
+
+@triton.jit
+def gemv_kernel(
+    A_ptr, x_ptr, y_ptr,
+    m, n,
+    stride_am, stride_an,
+    BLOCK_SIZE: tl.constexpr
+):
+    row_id = tl.program_id(0)
+    acc = 0.0
+    
+    for off in range(0, n, BLOCK_SIZE):
+        cols = off + tl.arange(0, BLOCK_SIZE)
+        mask = cols < n
+        A_offset = row_id * stride_am + cols * stride_an
+        x_offset = cols
+        a = tl.load(A_ptr + A_offset, mask=mask)
+        x = tl.load(x_ptr + x_offset, mask=mask)
+        acc += tl.sum(a * x, axis=0)
+    
+    tl.store(y_ptr + row_id, acc)
+
+  
+
+
+def gemv(A: torch.Tensor, vector: torch.Tensor, output, ptx = 0):
+    n, k = A.shape
+    device = A.device
+    stride_ak, stride_an = A.stride()
+    assert vector.shape[1] == A.shape[1], "Vector and input tensor shape mismatch"
+    assert A.device == device and vector.device == device and output.device == device, "Tensors must be on CUDA"
+    grid = lambda meta: (n, )
+    
+    k = gemv_kernel[grid](A, vector, output, n, k, stride_ak, stride_an,  BLOCK_SIZE = 1024)
+         
+    return k
+
 import argparse
 parser = argparse.ArgumentParser(description='Calculate volume of a cylinder')
 # 添加参数
 parser.add_argument('--marlin', type=int, default=0)
+
+parser.add_argument('--ptx', type=int, default=0)
 # 解析参数
 args = parser.parse_args()
 
-for (m, k) in [(2048, 2048), (4096, 4096), (4096, 12288), (4096, 11008 * 2) ]:
-  dtype = torch.float16
-
-  activation  = torch.randint(low=-1, high=2, size=(m, k)).to(torch.float16).to(device)
-  vector =  torch.randint(low=-1, high=2, size=(1, k)).to(torch.float16).to(device)
-  c = torch.zeros((1, m), dtype=dtype, device=device)
-  # print(c)
-  lib.warp_specialized_gemv_host(activation, vector, c)
 
 
-  torch.cuda.synchronize()
-  torch.testing.assert_close(c, torch.mm(vector, activation.T), rtol=1e-2, atol=1e-1)
+test_cases = [
+      ("torch", "torch.mm"),
+      ("mygemv", "warp_specialized_gemv"),
+      ("triton_gemv", "gemv")
+  ]
 
+for test_name, func_name in test_cases:
 
-  torch.cuda.synchronize()
-  with torch.cuda.stream(torch.cuda.Stream()):
-    if args.marlin == 1:
-      ms = do_bench(lambda: torch.mm(vector, activation.T))
-    else:
-      ms = do_bench(lambda: lib.warp_specialized_gemv_host(activation, vector, c))
-    # 
+  print(f"测试 {func_name}")
 
+  for (m, k) in [(2048, 4096), (4096, 4096), (4096, 12288), (4096, 11008 * 2) ]:
+    dtype = torch.float16
 
+    activation  = torch.randint(low=-1, high=2, size=(m, k)).to(torch.float16).to(device)
+    vector =  torch.randint(low=-1, high=2, size=(1, k)).to(torch.float16).to(device)
+
+    # activation  = torch.ones((m, k)).to(torch.float16).to(device)
+    # vector =  torch.ones((1, k)).to(torch.float16).to(device)
+    c = torch.zeros((1, m), dtype=dtype, device=device)
+
+    c_triton = torch.zeros((1, m), dtype=dtype, device=device)
+    # print(c)
+    lib.warp_specialized_gemv_host(activation, vector, c)
+    kernel = gemv(activation, vector, c_triton)
+
+    import os
+    if args.ptx == 1:
   
-  gb = (m * k + m + k) * 2 / 1024 / 1024 / 1024
-  bandwidth_gb_s = (gb) / ms * 1000
-  print(f"{bandwidth_gb_s=} GB/s, {gb} GB, {ms} ms")
+        import os
+        f = open("gemv.ptx","w")
+        f.writelines(kernel.asm['ptx'])
+        f.close()
+
+    # print(c_triton)
+    # print(c)
+    # exit()
+    torch.cuda.synchronize()
+    torch.testing.assert_close(c, torch.mm(vector, activation.T), rtol=1e-2, atol=1e-1)
+    torch.testing.assert_close(c, c_triton , rtol=1e-2, atol=1e-1)
+
+
+    torch.cuda.synchronize()
+    
+    with torch.cuda.stream(torch.cuda.Stream()):
+        if test_name == "torch":
+            ms = do_bench(lambda: torch.mm(vector, activation.T))
+        if test_name == "mygemv":
+            ms = do_bench(lambda: lib.warp_specialized_gemv_host(activation, vector, c))
+        
+        if test_name == 'triton_gemv':
+           ms =  do_bench(lambda: gemv(activation, vector, c_triton))
+        
+        
+        gb = (m * k + m + k) * 2 / 1024 / 1024 / 1024
+        bandwidth_gb_s = (gb) / ms * 1000
+        print(f"{bandwidth_gb_s=} GB/s, {gb} GB, {ms} ms")
