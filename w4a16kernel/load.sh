@@ -1,0 +1,1 @@
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/chenyidong/sgtest/w4a16kernel/kernel/build

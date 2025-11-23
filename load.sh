@@ -5,3 +5,8 @@ spack load unzip
 export PYTHONPATH=/home/chenyidong/newstart/bandwidth/jitcu
 export PYTHONPATH=$PYTHONPATH:/home/chenyidong/newstart/bandwidth
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/chenyidong/sgtest/w4a16kernel/kernel/build
+
+
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/spack/spack/opt/spack/linux-debian12-sapphirerapids/gcc-12.2.0/cuda-12.8.0-ogkmenn2commmbqjel5iws2ieekvevsj/lib64
+
+conda activate dsl
