@@ -343,14 +343,16 @@ def gemv_int4(A: torch.Tensor, vector: torch.Tensor, output, ptx = 0):
 
 @triton.jit
 def dequanti(b):
-    x1, x2, x3, x4 = tl.inline_asm_elementwise(
+    x1, x2 = tl.inline_asm_elementwise(
         asm="""
             {
             .reg .b32 	r<16>;
             .reg .b32  r_high<2>, r_low<2>;
 
-	        .reg .b64 	rd<2>;
-            mov.u32 r2, $4;
+	          .reg .b64 	rd<2>;
+            .reg .u16 tmp1, tmp2, tmp3, tmp4;
+            
+            mov.u32 r2, $2;
             mov.u32 	r3, 983055;
             mov.u32 	r8, 1677747200;
             lop3.b32 r1, r2, r3, r8, 234;
@@ -363,49 +365,24 @@ def dequanti(b):
             sub.f16x2 r9,r1,r11;
             
             shr.s32   r_high1, r9, 16;
-            cvt.u16.u32   $0, r_high1;
+            cvt.u16.u32   tmp1, r_high1;
             and.b32       r_low1, r9, 0xFFFF;
-            cvt.u16.u32   $1, r_low1;
+            cvt.u16.u32   tmp2, r_low1;
 
             shr.s32   r_high1, r12, 16;
-            cvt.u16.u32   $2, r_high1;
+            cvt.u16.u32   tmp3, r_high1;
             and.b32       r_low1, r12, 0xFFFF;
-            cvt.u16.u32   $3, r_low1;
+            cvt.u16.u32   tmp4, r_low1;
+
+            mov.b32 $0, {tmp1, tmp2};   
+            mov.b32 $1, {tmp3, tmp4};  
             }
         """,
         constraints=(
-            "=f,=f,=f,=f,r"
+            "=r,=r,r"
         ),
-        args=[b], #输入 参数4
-        dtype=(tl.float16, tl.float16, tl.float16, tl.float16), #参数0
-        is_pure=False,
-        pack=1,
-    )
-
-    
-    return x1, x2, x3, x4
-
-
-
-
-@triton.jit
-def dequant_uint32_2_half4(a):
-    x1, x2 = tl.inline_asm_elementwise(
-        asm="""
-            {
-              .reg .u32 t0;
-              .reg .u16 h0, h1;
-              mov.u32 t0, $2;
-              cvt.u16.u32 $0, t0;      
-              shr.u32 t0, t0, 16;      
-              cvt.u16.u32 $1, t0;      
-            }
-        """,
-        constraints=(
-            "=f,=f,r"
-        ),
-        args=[a],  
-        dtype=(tl.float16, tl.float16), #输出
+        args=[b], #输入
+        dtype=(tl.uint32, tl.uint32), #输出
         is_pure=False,
         pack=1,
     )
@@ -417,31 +394,53 @@ def dequant_uint32_2_half4(a):
 
 
 @triton.jit
-def sum_4_half(x1, x2, x3, x4):
+def sum_4_half(x1, x2, vec1, vec2):
+    # x1 : int32 x2: int32
+    # vec1 : int32 vec2: int32
+    # x1 * vec1 + x2 * vec2
     y = tl.inline_asm_elementwise(
         asm="""
             {
-              .reg .b32 vec12, vec34, vec_sum;
-              .reg .b16 low, high;
-              .reg .u16 tmp<4>;
-              mov.u16 tmp0, $0;
-              mov.u16 tmp1, $1;
-              mov.u16 tmp2, $2;
-              mov.u16 tmp3, $3;
-                  
+              .reg .b32 vec1, vec2, vec_sum;
+              .reg .b16 h_low, h_high, h_final;
+              .reg .b32 x1, x2;
+
+              mov.b32 vec1, $1;
+              mov.b32 vec2, $2;
+              mov.b32 x1, $3;
+              mov.b32 x2, $4;
+
+              mul.f16x2 vec1, vec1, x1;
+              mul.f16x2 vec2, vec2, x2;
+              add.f16x2 vec_sum, vec1, vec2;
+              mov.b32 {h_high, h_low}, vec_sum; 
+              add.f16 h_final, h_high, h_low;              
+              cvt.u16.u16 $0,  h_final;
+               
             }
         """,
         constraints=(
             "=f,r,r,r,r"
         ),
-        args=[x1, x2, x3, x4],  
-        dtype=(tl.float16), #输出
+        args=[x1, x2, vec1, vec2],  # 参数 1 2 3 4
+        dtype=(tl.float16), #参数 0
         is_pure=False,
         pack=1,
     )
 
     return y
 
+
+@triton.jit
+def load_v4_b32(ptr):
+    return tl.inline_asm_elementwise(
+        asm="ld.global.v4.u32 {$0,$1,$2,$3}, [$4];",
+        constraints=("=r,=r,=r,=r,l"),
+        args=[ptr],
+        dtype=(tl.int32, tl.int32, tl.int32, tl.int32),
+        is_pure=False,
+        pack=1
+    )
 
 @triton.jit
 def test_dequant_kernel(
@@ -458,10 +457,10 @@ def test_dequant_kernel(
 
 
     row_id = tl.program_id(0)
-    acc = 0.0
-    elements_per_sample = 8
-    W_nbits = 4
-    
+    acc = 0
+    acc = acc.to(tl.float16)
+
+
     offs_k =  tl.arange(0, BLOCK_SIZE)
     A_offset = row_id * stride_am + (offs_k) * stride_an
     
@@ -474,27 +473,16 @@ def test_dequant_kernel(
       a = tl.load(A_ptr + A_offset,  eviction_policy=a_evict, mask = mask)
 
 
-      u32_data1 = tl.load(x_ptr + (offs_k * 4), mask=mask)
-      u32_data2 = tl.load(x_ptr + (offs_k * 4 + 1), mask=mask)
-      u32_data3 = tl.load(x_ptr + (offs_k * 4 + 2), mask=mask)
-      u32_data4 = tl.load(x_ptr + (offs_k * 4 + 3), mask=mask)
-      a1, a2, a3, a4 = dequanti(a)
-      x1, x2 =  dequant_uint32_2_half4(u32_data1)
-      x3, x4 =  dequant_uint32_2_half4(u32_data2)
-      x5, x6 =  dequant_uint32_2_half4(u32_data3)
-      x7, x8 =  dequant_uint32_2_half4(u32_data4)
-
-       
-
-      # all = a1 * x1 + a2 * x2 + a3 * x3 + a4 * x4
+      # x_vector = tl.load(x_ptr + (offs_k * 4), mask=mask)
+        
+      x1, x2, x3, x4 = load_v4_b32(x_ptr + (offs_k * 4))
+      
+      a1, a2 = dequanti(a)      
       a = a >> 8
-      a5, a6, a7, a8 = dequanti(a)
+      a5, a6 = dequanti(a)      
 
-      all1 = a1 + a2 + a3 + a4
-      all2 = a5 + a6 + a7 + a8
-      # all1 = sum_4_half(a1, a2, a3, a4) 
-      # all2 = sum_4_half(a5, a6, a7, a8) 
-      # all += a5 * x5 + a6 * x6 + a7 * x7 + a8 * x8
+      all1 = sum_4_half(a1, a2, x2, x1) 
+      all2 = sum_4_half(a5, a6, x4, x3) 
       
       acc += tl.sum(all1 + all2, axis=0) 
 
@@ -518,11 +506,6 @@ def test_dequant(A: torch.Tensor, vector: torch.Tensor, output, ptx = 0):
     int4_k = A.shape[1]
 
     # 获取原始存储
-    storage = vector.untyped_storage()
-    k = vector.numel()  # 元素数量
-
-    # 正确的set_用法 - 第三个参数必须是tuple
-    uint32_tensor = torch.tensor([], dtype=torch.uint32,device=device).set_(storage, 0, (k // 2,))
     # print("重新解释为uint32:", uint32_tensor)
 
     # print(vector)
@@ -530,6 +513,13 @@ def test_dequant(A: torch.Tensor, vector: torch.Tensor, output, ptx = 0):
     # vector *= 2
     # print(uint32_tensor)
     # exit()
+      # 获取原始存储
+    storage = vector.untyped_storage()
+    k = vector.numel()  # 元素数量
+
+    # 正确的set_用法 - 第三个参数必须是tuple
+    uint32_tensor = torch.tensor([], dtype=torch.uint32,device=device).set_(storage, 0, (k // 2,))
+    # print("重新解释为uint32:", uint32_tensor)
     test_dequant_kernel[grid](A, uint32_tensor, output, n, k, int4_k,  
                             stride_ak, stride_an,  
                             BLOCK_SIZE = 512, unpack_mask = 15)
@@ -614,8 +604,9 @@ for (out_dim, k) in [ (4096, 4096), (2048, 4096), (4096, 8192), (12288, 4096), (
 
 
   # print(c_triton)
-  # print(c_triton_2)
-  # print(c)
+  print(c_triton_2)
+  print(c)
+  exit()
   #------------------------------------mixq----------------------------------
   torch.testing.assert_close(c, C_i4mar, rtol=1e-2, atol=1e-2)
   torch.testing.assert_close(c, c_triton * scales_trion.T.to(torch.float16), rtol=1e-2, atol=1e-2)
