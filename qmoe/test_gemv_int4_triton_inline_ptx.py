@@ -374,8 +374,8 @@ def dequanti(b):
             and.b32       r_low1, r12, 0xFFFF;
             cvt.u16.u32   tmp4, r_low1;
 
-            mov.b32 $0, {tmp1, tmp2};   
-            mov.b32 $1, {tmp3, tmp4};  
+            mov.b32 $1, {tmp4, tmp3};   
+            mov.b32 $0, {tmp2, tmp1};  
             }
         """,
         constraints=(
@@ -442,17 +442,32 @@ def load_v4_b32(ptr):
         pack=1
     )
 
+
+
+# def get_autotune_config():
+#     configs = []
+#     for block in [32, 64, 128, 256, 512]:
+#       for num_warp in [1, 2, 4]:
+#         configs.append(triton.Config({'BLOCK_SIZE' : block, }, num_warps=num_warp, num_stages=1))
+
+#     return configs
+# @triton.autotune(
+#     configs=get_autotune_config(),
+#     key = ['m', 'k', 'int4_k'],
+#     restore_value = ['A_ptr', 'x_ptr', 'y_ptr'],
+#     use_cuda_graph = True
+
+# )
+
 @triton.jit
 def test_dequant_kernel(
     A_ptr, x_ptr, y_ptr,
     m, k, int4_k,
     stride_am, stride_an,
     BLOCK_SIZE: tl.constexpr,
-    unpack_mask: tl.constexpr,
     a_evict: tl.constexpr = 'evict_last',
     b_evict: tl.constexpr = 'evict_first',
 ):
-    row_id = tl.program_id(0)
 
 
 
@@ -470,27 +485,27 @@ def test_dequant_kernel(
           
       mask = offs_k < int4_k
       
+      x1, x2, x3, x4 = load_v4_b32(x_ptr + (offs_k * 8))
+      
       a = tl.load(A_ptr + A_offset,  eviction_policy=a_evict, mask = mask)
 
-
-      # x_vector = tl.load(x_ptr + (offs_k * 4), mask=mask)
         
-      x1, x2, x3, x4 = load_v4_b32(x_ptr + (offs_k * 4))
+      
       
       a1, a2 = dequanti(a)      
       a = a >> 8
       a5, a6 = dequanti(a)      
 
-      all1 = sum_4_half(a1, a2, x2, x1) 
-      all2 = sum_4_half(a5, a6, x4, x3) 
-      
+      all1 = sum_4_half(a1, a2, x1, x2) 
+      all2 = sum_4_half(a5, a6, x3, x4) 
+
+        
       acc += tl.sum(all1 + all2, axis=0) 
 
-      offs_k +=  BLOCK_SIZE
+      offs_k +=  BLOCK_SIZE 
       A_offset += (BLOCK_SIZE) * stride_an
 
     tl.store(y_ptr + row_id, acc)
-
 
 def test_dequant(A: torch.Tensor, vector: torch.Tensor, output, ptx = 0):
     n, _ = A.shape
@@ -514,15 +529,16 @@ def test_dequant(A: torch.Tensor, vector: torch.Tensor, output, ptx = 0):
     # print(uint32_tensor)
     # exit()
       # 获取原始存储
-    storage = vector.untyped_storage()
-    k = vector.numel()  # 元素数量
+    # storage = vector.untyped_storage()
+    # k = vector.numel()  # 元素数量
 
+    # print(vector[0,0:8])
+    # exit()
     # 正确的set_用法 - 第三个参数必须是tuple
-    uint32_tensor = torch.tensor([], dtype=torch.uint32,device=device).set_(storage, 0, (k // 2,))
+    # uint32_tensor = torch.tensor([], dtype=torch.uint64,device=device).set_(storage, 0, (k // 4,))
     # print("重新解释为uint32:", uint32_tensor)
-    test_dequant_kernel[grid](A, uint32_tensor, output, n, k, int4_k,  
-                            stride_ak, stride_an,  
-                            BLOCK_SIZE = 512, unpack_mask = 15)
+    test_dequant_kernel[grid](A, vector, output, n, k, int4_k,  
+                            stride_ak, stride_an, BLOCK_SIZE = 256)
     return 
 
 lib = load_cuda_ops(
@@ -547,6 +563,7 @@ parser.add_argument('--triton', type=int, default=0)
 parser.add_argument('--bitblas', type=int, default=0)
 parser.add_argument('--gemlite', type=int, default=0)
 parser.add_argument('--micro', type=int, default=0)
+parser.add_argument('--debug', type=bool, default=False)
 
 
 
@@ -604,13 +621,15 @@ for (out_dim, k) in [ (4096, 4096), (2048, 4096), (4096, 8192), (12288, 4096), (
 
 
   # print(c_triton)
-  print(c_triton_2)
-  print(c)
-  exit()
+  # print(c_triton_2)
+  # print(c)
+  # exit()
   #------------------------------------mixq----------------------------------
   torch.testing.assert_close(c, C_i4mar, rtol=1e-2, atol=1e-2)
   torch.testing.assert_close(c, c_triton * scales_trion.T.to(torch.float16), rtol=1e-2, atol=1e-2)
-  torch.testing.assert_close(c, c_triton_2 * scales.T.to(torch.float16), rtol=1e-2, atol=1e-2)
+  
+  if not args.debug:
+    torch.testing.assert_close(c, c_triton_2 * scales.T.to(torch.float16), rtol=1e-2, atol=1e-2)
 
   # exit()
   

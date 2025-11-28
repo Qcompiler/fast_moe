@@ -1,0 +1,17 @@
+      # if row_id == 0:
+      #     u16_lo = a1 & 0xFFFF
+      #     u16_hi = (a1 >> 16) & 0xFFFF
+      #     a1 = u16_lo.to(tl.float16, bitcast = True)   
+      # #   # if A_offset[i] == 0:
+      #     a1_ = u16_hi.to(tl.float16, bitcast = True)  
+      #     tl.device_print("a1", a1)
+      #     tl.device_print("a1_", a1_)
+      #   tl.device_print("a2", a2)
+      #   tl.device_print("a5", a5)
+      #   tl.device_print("a6", a6)
+      #   tl.device_print("x1", x1)
+      #   tl.device_print("x2", x2)
+      #   tl.device_print("x3", x3)
+      #   tl.device_print("x4", x4)
+      #   tl.device_print("all1", all1)
+      #   tl.device_print("all2", all2)
