@@ -607,10 +607,6 @@ for (out_dim, k) in [ (4096, 4096), (2048, 4096), (4096, 8192), (12288, 4096), (
   scales_trion = scales_trion.to(torch.float32)
   gemv_int4(q_weight_triton, vector, c_triton)
 
-  # print(torch.mm(vector, weight.t()))
-  c_triton_2 = torch.zeros((1, out_dim), dtype=dtype, device=device)
-
-  test_dequant(q_weight, vector, c_triton_2)
 
 
   # print(c_triton)
@@ -619,7 +615,6 @@ for (out_dim, k) in [ (4096, 4096), (2048, 4096), (4096, 8192), (12288, 4096), (
   #------------------------------------mixq----------------------------------
   torch.testing.assert_close(c, C_i4mar, rtol=1e-2, atol=1e-2)
   torch.testing.assert_close(c, c_triton * scales_trion.T.to(torch.float16), rtol=1e-2, atol=1e-2)
-  torch.testing.assert_close(c, c_triton_2 * scales.T.to(torch.float16), rtol=1e-2, atol=1e-2)
 
   # exit()
   
@@ -712,11 +707,7 @@ for (out_dim, k) in [ (4096, 4096), (2048, 4096), (4096, 8192), (12288, 4096), (
 
       ms = do_bench_cudagraph(lambda: gemlite_linear.forward_manual(vector, matmul_type=matmul_type))
 
-    if args.micro == 1:
 
-      ms = do_bench_cudagraph(lambda: test_dequant(q_weight, vector, c_triton))
-
-      
     # ms = do_bench(lambda: torch.mm(vector, weight.T))
 
 

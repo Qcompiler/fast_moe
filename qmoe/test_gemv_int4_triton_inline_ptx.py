@@ -1,6 +1,6 @@
 import torch
 from jitcu import load_cuda_ops
-from triton.testing import do_bench_cudagraph,do_bench
+from triton.testing import do_bench, do_bench_cudagraph
 
 import torch
 import numpy as np
@@ -8,6 +8,8 @@ import torch.nn as nn
 seed = 0
 np.random.seed(seed)
 torch.random.manual_seed(seed)
+
+
 
 
 code = r"""
@@ -228,58 +230,10 @@ import triton
 import triton.language as tl
 
 
-
-@triton.jit
-def dequantize(
-    b,
-    q_shift
-
-):
-    #Unpack
-    unpack_mask = 15
-    b = (b >> q_shift) & unpack_mask # int32 -> int32
-    scales = None
-    zeros = None
-    # b = tl.fma(b.to(tl.float32), scales, zeros) #Asymmetric (Grouped - b*scales + zeros)
-    b = b.to(tl.float32)
-    return b
+ 
 
 
 
-
-
-@triton.jit
-def gemv_int4_kernel(
-    A_ptr, output_ptr,
-    m, k,
-    stride_cm, stride_cn,
-    stride_am, stride_an,
-    BLOCK_SIZE: tl.constexpr,
-    unpack_mask: tl.constexpr,
-    a_evict: tl.constexpr = 'evict_last',
-    b_evict: tl.constexpr = 'evict_first',
-):
-    row_id = tl.program_id(0)
-    elements_per_sample = 8
-    W_nbits = 4
-    
-  
-    # off = 0
-    for kk in range(0, tl.cdiv(k, BLOCK_SIZE)):
-
-
-      offs_k =   tl.arange(0, BLOCK_SIZE)
-
-      mask_int4 = offs_k < k
-      
-      A_offset = row_id * stride_am + (offs_k // 8) * stride_an
-
-      output_offset = row_id * stride_cm + (offs_k) * stride_cn
-      a = tl.load(A_ptr + A_offset, mask=mask_int4, eviction_policy=b_evict)
-      q_shift = ((offs_k % elements_per_sample) * W_nbits).to(tl.int32)
-      a = (a >> q_shift) & unpack_mask - 8 # int32 -> int32
-      a = a.to(tl.float32) 
-      tl.store(output_ptr + output_offset, a)
 
 @triton.jit
 def gemv_int4_kernel(
@@ -305,6 +259,7 @@ def gemv_int4_kernel(
       
       a = tl.load(A_ptr + A_offset,  eviction_policy=a_evict)
 
+      
       q_shift = ((offs_k % elements_per_sample) * W_nbits).to(tl.int32)
       a = ((a >> q_shift) & unpack_mask) - 8 
       a = a.to(tl.float16)
@@ -334,9 +289,10 @@ def gemv_int4(A: torch.Tensor, vector: torch.Tensor, output, ptx = 0):
     kernel = gemv_int4_kernel[grid](A, vector, output, n, k, stride_ak, stride_an,  
                                 BLOCK_SIZE = 1024, unpack_mask = 15)
          
-    # gemv_int4_kernel[grid](A, output, n, k,  stride_cm, stride_cn, 
-    #                         stride_ak, stride_an,  
-    #                         BLOCK_SIZE = 1024, unpack_mask = 15)
+
+
+
+
     return kernel
 
 
@@ -348,10 +304,8 @@ def dequanti(b):
             {
             .reg .b32 	r<16>;
             .reg .b32  r_high<2>, r_low<2>;
-
 	          .reg .b64 	rd<2>;
-            .reg .u16 tmp1, tmp2, tmp3, tmp4;
-            
+            .reg .u16 tmp1, tmp2, tmp3, tmp4;            
             mov.u32 r2, $2;
             mov.u32 	r3, 983055;
             mov.u32 	r8, 1677747200;
@@ -362,18 +316,15 @@ def dequanti(b):
             mov.u32 	r14, 738208768;
             mov.u32 	r15, -729754496;
             fma.rn.f16x2 r12,r5,r14,r15;
-            sub.f16x2 r9,r1,r11;
-            
+            sub.f16x2 r9,r1,r11;            
             shr.s32   r_high1, r9, 16;
             cvt.u16.u32   tmp1, r_high1;
             and.b32       r_low1, r9, 0xFFFF;
             cvt.u16.u32   tmp2, r_low1;
-
             shr.s32   r_high1, r12, 16;
             cvt.u16.u32   tmp3, r_high1;
             and.b32       r_low1, r12, 0xFFFF;
             cvt.u16.u32   tmp4, r_low1;
-
             mov.b32 $1, {tmp4, tmp3};   
             mov.b32 $0, {tmp2, tmp1};  
             }
@@ -386,8 +337,6 @@ def dequanti(b):
         is_pure=False,
         pack=1,
     )
-
-    
     return x1, x2
 
 
@@ -446,27 +395,36 @@ def load_v4_b32(ptr):
 
 # def get_autotune_config():
 #     configs = []
-#     for block in [32, 64, 128, 256, 512]:
-#       for num_warp in [1, 2, 4]:
-#         configs.append(triton.Config({'BLOCK_SIZE' : block, }, num_warps=num_warp, num_stages=1))
+#     # for evict in ['evict_last', 'evict_first', None]:
+#     for block_size in [128, 256, 512]:
+#           configs.append(triton.Config({ 'BLOCK_SIZE' : block_size}))
 
 #     return configs
+
 # @triton.autotune(
 #     configs=get_autotune_config(),
 #     key = ['m', 'k', 'int4_k'],
-#     restore_value = ['A_ptr', 'x_ptr', 'y_ptr'],
-#     use_cuda_graph = True
-
+#     use_cuda_graph = False
 # )
 
+# bandwidth_gb_s=2771.1846914627185 GB/s, 0.0312652587890625 GB, 0.011282271761020632 ms
+# bandwidth_gb_s=1781.0717729268401 GB/s, 0.015636444091796875 GB, 0.008779233004238489 ms
+# bandwidth_gb_s=3476.3029263603253 GB/s, 0.06252288818359375 GB, 0.017985454521092313 ms
+# bandwidth_gb_s=4039.256917884022 GB/s, 0.093780517578125 GB, 0.02321726978120823 ms
+# bandwidth_gb_s=4197.0196543086395 GB/s, 0.125030517578125 GB, 0.029790310238306673 ms
+
+# bandwidth_gb_s=2711.641957021821 GB/s, 0.0312652587890625 GB, 0.011530009966139091 ms
+# bandwidth_gb_s=1844.975788655275 GB/s, 0.015636444091796875 GB, 0.008475148664792842 ms
+# bandwidth_gb_s=3276.7513242093223 GB/s, 0.06252288818359375 GB, 0.019080754685795533 ms
+# bandwidth_gb_s=3878.28912972846 GB/s, 0.093780517578125 GB, 0.024180898958580502 ms
+# bandwidth_gb_s=4084.921795699678 GB/s, 0.125030517578125 GB, 0.03060781180921222 ms
 @triton.jit
 def test_dequant_kernel(
     A_ptr, x_ptr, y_ptr,
     m, k, int4_k,
-    stride_am, stride_an,
-    BLOCK_SIZE: tl.constexpr,
-    a_evict: tl.constexpr = 'evict_last',
-    b_evict: tl.constexpr = 'evict_first',
+    stride_am, 
+    BLOCK_SIZE : tl.constexpr = 256,
+    evict : tl.constexpr = 'evict_last'
 ):
 
 
@@ -477,35 +435,58 @@ def test_dequant_kernel(
 
 
     offs_k =  tl.arange(0, BLOCK_SIZE)
-    A_offset = row_id * stride_am + (offs_k) * stride_an
+    A_offset = row_id * stride_am + (offs_k)
     
-    
+    A_ptr = A_ptr + A_offset
+    x_ptr = x_ptr + (offs_k * 2)
     # x_ptr_int = tl.cast(x_ptr, (tl.uint32), bitcast = True)
     for kk in range(0, tl.cdiv(int4_k, BLOCK_SIZE)):
-          
       mask = offs_k < int4_k
-      
-      x1, x2, x3, x4 = load_v4_b32(x_ptr + (offs_k * 8))
-      
-      a = tl.load(A_ptr + A_offset,  eviction_policy=a_evict, mask = mask)
-
-        
-      
-      
-      a1, a2 = dequanti(a)      
+      x1, x2, x3, x4 = load_v4_b32(x_ptr)
+      a = tl.load(A_ptr,  eviction_policy = evict, mask = mask)
+      a1, a2 = dequanti(a)  
+      all1 = sum_4_half(a1, a2, x1, x2)     
       a = a >> 8
       a5, a6 = dequanti(a)      
-
-      all1 = sum_4_half(a1, a2, x1, x2) 
       all2 = sum_4_half(a5, a6, x3, x4) 
-
-        
+      
       acc += tl.sum(all1 + all2, axis=0) 
-
       offs_k +=  BLOCK_SIZE 
-      A_offset += (BLOCK_SIZE) * stride_an
+      A_ptr += (BLOCK_SIZE) 
+      x_ptr += (BLOCK_SIZE * 2)
 
     tl.store(y_ptr + row_id, acc)
+
+
+def test_dequant(A: torch.Tensor, vector: torch.Tensor, output):
+    n, _ = A.shape
+    k = vector.shape[1] # [m, k ]
+    device = A.device
+    stride_ak, stride_an = A.stride()
+    stride_cm, stride_cn = output.stride()
+    assert vector.shape[1] == A.shape[1] * 8, "Vector and input tensor shape mismatch"
+    assert A.device == device and vector.device == device and output.device == device, "Tensors must be on CUDA"
+    grid = lambda meta: (n, 1)
+    
+    storage = vector.untyped_storage()
+    # k = vector.numel()  # 元素数量
+    uint64_tensor = torch.tensor([], dtype=torch.uint64,device=device).set_(storage, 0, (k // 4,))
+    int4_k = int(A.shape[1])
+    
+    # if out_dim > 4096:
+    #   evict = 'evict_first'
+    # else:
+    #   evict = 'evict_last'
+    
+    # ret = triton.compile(kernel, signature="*fp32,i32,*fp32,i32", constants={"BLOCK_M": 64, "BLOCK_N": 64})
+    # kernel = triton.compile(test_dequant_kernel)
+    kernel = test_dequant_kernel[grid](A, uint64_tensor, output, n, k, int4_k,  
+                            stride_ak)
+    
+    
+    return kernel
+
+
 
 def test_dequant(A: torch.Tensor, vector: torch.Tensor, output, ptx = 0):
     n, _ = A.shape
@@ -517,30 +498,42 @@ def test_dequant(A: torch.Tensor, vector: torch.Tensor, output, ptx = 0):
     assert A.device == device and vector.device == device and output.device == device, "Tensors must be on CUDA"
     grid = lambda meta: (n, 1)
     
-    
-    int4_k = A.shape[1]
-
-    # 获取原始存储
-    # print("重新解释为uint32:", uint32_tensor)
-
-    # print(vector)
-    # print(uint32_tensor)
-    # vector *= 2
-    # print(uint32_tensor)
-    # exit()
-      # 获取原始存储
-    # storage = vector.untyped_storage()
+    storage = vector.untyped_storage()
     # k = vector.numel()  # 元素数量
+    uint64_tensor = torch.tensor([], dtype=torch.uint64,device=device).set_(storage, 0, (k // 4,))
+    int4_k = int(A.shape[1])
+    
+    if out_dim > 4096:
+      evict = 'evict_first'
+    else:
+      evict = 'evict_last'
+    
+    # ret = triton.compile(kernel, signature="*fp32,i32,*fp32,i32", constants={"BLOCK_M": 64, "BLOCK_N": 64})
+    # kernel = triton.compile(test_dequant_kernel)
+    kernel = test_dequant_kernel[grid](A, uint64_tensor, output, n, k, int4_k,  
+                            stride_ak)
+    
+    
+    return kernel
 
-    # print(vector[0,0:8])
-    # exit()
-    # 正确的set_用法 - 第三个参数必须是tuple
-    # uint32_tensor = torch.tensor([], dtype=torch.uint64,device=device).set_(storage, 0, (k // 4,))
-    # print("重新解释为uint32:", uint32_tensor)
-    test_dequant_kernel[grid](A, vector, output, n, k, int4_k,  
-                            stride_ak, stride_an, BLOCK_SIZE = 256)
-    return 
 
+def run_kernel(A: torch.Tensor, vector: torch.Tensor, output, kernel):
+    n, _ = A.shape
+    k = vector.shape[1] # [m, k ]
+    device = A.device
+    stride_ak, stride_an = A.stride()
+   
+    storage = vector.untyped_storage()
+    uint64_tensor = torch.tensor([], dtype=torch.uint64,device=device).set_(storage, 0, (k // 4,))
+    int4_k = int(A.shape[1])    
+    
+ 
+    kernel[n, 1, 1](A, uint64_tensor, output, n, k, int4_k,  
+                            stride_ak)
+    
+
+# ret = compile_kernel()
+# print(ret)
 lib = load_cuda_ops(
   name="test",
   sources=code,
@@ -564,7 +557,7 @@ parser.add_argument('--bitblas', type=int, default=0)
 parser.add_argument('--gemlite', type=int, default=0)
 parser.add_argument('--micro', type=int, default=0)
 parser.add_argument('--debug', type=bool, default=False)
-
+parser.add_argument('--tilelang', type=int, default=0)
 
 
 # 解析参数
@@ -574,11 +567,169 @@ args = parser.parse_args()
 if args.bitblas == 1:
   import bitblas
 
-  
 from common.common import generate_randint, gen_quant4, gen_quant4_my_no_reorder
-
 from common.common import generate_randint, gen_quant4, gen_quant4_my
+
+if args.tilelang == 1:
+  import tilelang
+  from tilelang import language as T
+  from typing import Optional, Callable, Any
+  import torch
+  from tilelang import DataType
+  from tilelang.quantize import (
+      _tir_packed_int_to_int_convert,)
+
+
+  def dequantize_gemv(
+      M: int,
+      N: int,
+      K: int,
+      in_dtype: str,
+      out_dtype: str,
+      accum_dtype: str,
+      num_bits: int = 4,
+      storage_dtype: str = "int8",
+      source_format: str = "uint",
+      n_partition: int = 4,
+      reduce_thread: int = 32,
+      fast_decoding: bool = False,
+      trans_A: bool = False,
+      trans_B: bool = True,
+      group_size: int = -1,
+      with_scaling: bool = False,
+  ) -> Callable[..., Any]:
+
+      assert n_partition is not None, "n_partition must be provided"
+      assert reduce_thread is not None, (
+          "reduce_thread must be provided currently, as related bitblas.gpu.gemv.GEMV"
+          "sch_outer_reduction_with_config is not implemented")
+
+      assert trans_A is False, "Dequantize only implement for trans_A=False currently"
+      assert trans_B is True, "Dequantize only implement for trans_B=TRue currently"
+      storage_type = "".join(c for c in storage_dtype if not c.isdigit())
+      storage_nbit = int("".join(c for c in storage_dtype if c.isdigit()))
+      num_elems_per_byte = storage_nbit // num_bits
+
+      MAX_TRANSACTION_SIZE_IN_BITS = 128
+      micro_size_k = MAX_TRANSACTION_SIZE_IN_BITS // DataType(in_dtype).bits
+      micro_size_k_compressed = micro_size_k // num_elems_per_byte
+      block_K = reduce_thread * micro_size_k
+
+      if group_size == -1:
+          group_size = K
+
+      A_shape = (M, K)
+      B_shape = (N, K // storage_nbit * num_bits)
+      C_shape = (M, N)
+
+      dp4a_size = 4
+      use_dp4a = in_dtype == "int8" and accum_dtype == "int32"
+
+      import_source: Optional[str] = None
+      func_name: str = ""
+      if fast_decoding is True:
+          # Lazy import to decrease the startup time
+          # as intrin registry may take a while to load
+          from tilelang.quantize import get_lop3_intrin_group
+
+          lop3_intrin_info = get_lop3_intrin_group(
+              out_dtype=in_dtype,
+              source_format=source_format,
+              source_bit=num_bits,
+              storage_dtype=storage_dtype,
+              with_scaling=with_scaling,
+              with_zeros=False,
+          )
+          import_source = lop3_intrin_info["c_source"]
+          func_name = lop3_intrin_info["func_name"]
+          assert import_source is not None, "lop3_intrin_info is not found"
+          assert func_name is not None, "lop3_intrin_info is not found"
+          import_source = import_source
+
+      @T.prim_func
+      def main(
+          A: T.Tensor[A_shape, in_dtype],
+          B: T.Tensor[B_shape, storage_dtype],
+          C: T.Tensor[C_shape, out_dtype],
+      ):
+          with T.Kernel(
+                  T.ceildiv(N, n_partition),
+                  M,
+                  threads=(reduce_thread, n_partition),
+          ) as (
+                  bx,
+                  by,
+          ):
+              A_local = T.alloc_local((micro_size_k,), in_dtype)
+              B_quant_local = T.alloc_local([micro_size_k_compressed], storage_dtype)
+              B_dequantize_local = T.alloc_local([micro_size_k], in_dtype)
+              accum_res = T.alloc_local((1,), accum_dtype)
+              reduced_accum_res = T.alloc_local((1,), accum_dtype)
+
+              kr = T.thread_binding(0, reduce_thread, thread="threadIdx.x")
+              ni = T.thread_binding(0, n_partition, thread="threadIdx.y")
+
+              T.import_source(import_source)
+
+              T.clear(accum_res)
+              for ko in T.serial(T.ceildiv(K, block_K)):
+                  for v in T.vectorized(micro_size_k):
+                      A_local[v] = A[by, ko * block_K + kr * micro_size_k + v]
+
+                  for v in T.vectorized(micro_size_k_compressed):
+                      B_quant_local[v] = B[
+                          bx * n_partition + ni,
+                          ko * (reduce_thread * micro_size_k_compressed) +
+                          kr * micro_size_k_compressed + v,
+                      ]
+
+                  if fast_decoding:
+                      T.call_extern(
+                          func_name,
+                          T.address_of(B_quant_local[0]),
+                          T.address_of(B_dequantize_local[0]),
+                          dtype=in_dtype,
+                      )
+                  else:
+                      for ki in T.serial(micro_size_k):
+                          B_dequantize_local[ki] = _tir_packed_int_to_int_convert(
+                              storage_type,
+                              storage_nbit)(num_bits, B_quant_local[ki // num_elems_per_byte],
+                                            ki % num_elems_per_byte, in_dtype)
+
+                  if use_dp4a:
+                      for ki in T.serial(micro_size_k // dp4a_size):
+                          T.dp4a(
+                              A_local[ki * dp4a_size],
+                              B_dequantize_local[ki * dp4a_size],
+                              accum_res[0],
+                          )
+                  else:
+                      for ki in T.serial(micro_size_k):
+                          accum_res[0] += A_local[ki] * B_dequantize_local[ki]
+
+              with T.attr(
+                      T.comm_reducer(lambda x, y: x + y, [T.Cast(accum_dtype, 0)]),
+                      "reduce_scope",
+                      T.reinterpret(T.uint64(0), dtype="handle"),
+              ):
+                  T.evaluate(
+                      T.tvm_thread_allreduce(
+                          T.uint32(1),
+                          accum_res[0],
+                          True,
+                          reduced_accum_res[0],
+                          kr,
+                          dtype="handle",
+                      ))
+              if kr == 0:
+                  C[by, bx * n_partition + ni] = reduced_accum_res[0]
+
+      return main
+
 for (out_dim, k) in [ (4096, 4096), (2048, 4096), (4096, 8192), (12288, 4096), (8192, 8192) ]:
+# for (out_dim, k) in [  (8192, 8192) ]:
+# for (out_dim, k) in [  (4096, 8192)]:
   dtype = torch.float16
 
 
@@ -617,9 +768,33 @@ for (out_dim, k) in [ (4096, 4096), (2048, 4096), (4096, 8192), (12288, 4096), (
   # print(torch.mm(vector, weight.t()))
   c_triton_2 = torch.zeros((1, out_dim), dtype=dtype, device=device)
 
-  test_dequant(q_weight, vector, c_triton_2)
+  
+  kernel = test_dequant(q_weight, vector, c_triton_2)
+  # print(c_triton_2)
+  from pathlib import Path
+  tmp = Path("/home/chenyidong/newstart/bandwidth/qmoe")
 
 
+  filename = "test.ptx"
+  temp_file = (tmp / filename)
+  # print(kernel.asm.keys())
+  # exit()
+  
+  temp_file.write_text(kernel.asm['ptx'])
+
+
+  filename = "test.ttgir"
+  temp_file = (tmp / filename)
+  # print(kernel.asm.keys())
+  # exit()
+  
+  temp_file.write_text(kernel.asm['ttgir'])
+  kernel = triton.compile(str(temp_file))
+  # print(kernel)
+  c_triton_2 = torch.zeros((1, out_dim), dtype=dtype, device=device)
+  run_kernel(q_weight, vector, c_triton_2, kernel)
+  # print(c_triton_2)
+ 
   # print(c_triton)
   # print(c_triton_2)
   # print(c)
@@ -706,26 +881,70 @@ for (out_dim, k) in [ (4096, 4096), (2048, 4096), (4096, 8192), (12288, 4096), (
     
     matmul_type = "GEMV_REVSPLITK"
     # matmul_type = "GEMM"
-    matmul_type = "GEMV_REVSPLITK"
-    output = gemlite_linear.forward_manual(vector, matmul_type=matmul_type)
+    # matmul_type = "GEMV_SPLITK"
+    for i in range(500):
+      output = gemlite_linear.forward_manual(vector, matmul_type=matmul_type)
+
+
+  if args.tilelang == 1:
+        M = 1
+        N = out_dim
+        K = k
+        in_dtype = "float16"
+        out_dtype = "float16"
+        accum_dtype = "float16"
+        num_bits = 4
+        storage_dtype = "int8"
+        source_format = "uint"
+        n_partition = 4
+        reduce_thread = 32
+        fast_decoding = True
+        trans_A = False
+        trans_B = True
+        group_size = -1
+        with_scaling = False
+
+        program = dequantize_gemv(M, N, K, in_dtype, out_dtype, accum_dtype, num_bits, storage_dtype,
+                                  source_format, n_partition, reduce_thread, fast_decoding, trans_A,
+                                  trans_B, group_size, with_scaling)
+
+        kernel = tilelang.compile(program)
+
+        # print(kernel.get_kernel_source())
+        # exit()
+
+        storage_nbit = int("".join(c for c in storage_dtype if c.isdigit()))
+        num_elems_per_byte = storage_nbit // num_bits
+        # A = torch.rand(M, K, dtype=getattr(torch, in_dtype)).cuda()
+        # qB = torch.randint(
+        #     0, 127, (N, K // num_elems_per_byte), dtype=getattr(torch, storage_dtype)).cuda()
+        C = torch.zeros(M, N, dtype=getattr(torch, accum_dtype)).cuda()
+
+ 
+        if fast_decoding:
+            from tilelang.quantize.utils import interleave_weight
+            qB = interleave_weight(q_weight, num_bits, in_dtype)
+        kernel(vector, qB, C)
 
   with torch.cuda.stream(torch.cuda.Stream()):
     if args.marlin == 1:
       ms = do_bench(lambda: marlin.mul(vector, B, C_i4mar, s, workspace, thread_k, thread_n, -1))
     if args.cuda == 1:
-      ms = do_bench_cudagraph(lambda: lib.warp_specialized_gemv_host(q_weight, vector, c, scales))
+      ms = do_bench(lambda: lib.warp_specialized_gemv_host(q_weight, vector, c, scales))
     if args.triton == 1:
-      ms = do_bench_cudagraph(lambda: gemv_int4(q_weight, vector, c_triton))
+      ms = do_bench(lambda: gemv_int4(q_weight, vector, c_triton))
     if args.bitblas == 1:
-      ms = do_bench_cudagraph(lambda: matmul(input_tensor, weight_tensor_int4, scale=scaling, zeros=zeros))
+      ms = do_bench(lambda: matmul(input_tensor, weight_tensor_int4, scale=scaling, zeros=zeros))
     if args.gemlite == 1:
 
       ms = do_bench_cudagraph(lambda: gemlite_linear.forward_manual(vector, matmul_type=matmul_type))
 
     if args.micro == 1:
 
-      ms = do_bench_cudagraph(lambda: test_dequant(q_weight, vector, c_triton))
+      ms = do_bench(lambda: run_kernel(q_weight, vector, c_triton_2, kernel))
 
+    if args.tilelang == 1:
+      ms = do_bench(lambda: kernel(vector, qB, c_triton))
       
     # ms = do_bench(lambda: torch.mm(vector, weight.T))
 

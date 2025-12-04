@@ -15,3 +15,21 @@
       #   tl.device_print("x4", x4)
       #   tl.device_print("all1", all1)
       #   tl.device_print("all2", all2)
+
+          # 获取原始存储
+    # print("重新解释为uint32:", uint32_tensor)
+
+    # print(vector)
+    # print(uint32_tensor)
+    # vector *= 2
+    # print(uint32_tensor)
+    # exit()
+      # 获取原始存储
+    # storage = vector.untyped_storage()
+    # k = vector.numel()  # 元素数量
+
+    # print(vector[0,0:8])
+    # exit()
+    # 正确的set_用法 - 第三个参数必须是tuple
+    # uint32_tensor = torch.tensor([], dtype=torch.uint64,device=device).set_(storage, 0, (k // 4,))
+    # print("重新解释为uint32:", uint32_tensor)

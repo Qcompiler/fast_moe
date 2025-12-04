@@ -1,0 +1,20 @@
+2025-11-29 21:34:34,338 INFO:Auto-tuning with 0.9 CPU utilizations, 2 CPUs available, 1 CPUs will be used
+2025-11-29 21:34:36,190 DEBUG:Compilation failed for config {'n_partition': 1, 'reduce_thread': 16} at index 0 with error: Cannot find global function target.build.tilelang_cuda_without_compile
+2025-11-29 21:34:36,230 DEBUG:Compilation failed for config {'n_partition': 1, 'reduce_thread': 32} at index 1 with error: Cannot find global function target.build.tilelang_cuda_without_compile
+2025-11-29 21:34:36,269 DEBUG:Compilation failed for config {'n_partition': 1, 'reduce_thread': 64} at index 2 with error: Cannot find global function target.build.tilelang_cuda_without_compile
+2025-11-29 21:34:36,308 DEBUG:Compilation failed for config {'n_partition': 2, 'reduce_thread': 16} at index 3 with error: Cannot find global function target.build.tilelang_cuda_without_compile
+2025-11-29 21:34:36,346 DEBUG:Compilation failed for config {'n_partition': 2, 'reduce_thread': 32} at index 4 with error: Cannot find global function target.build.tilelang_cuda_without_compile
+2025-11-29 21:34:36,386 DEBUG:Compilation failed for config {'n_partition': 2, 'reduce_thread': 64} at index 5 with error: Cannot find global function target.build.tilelang_cuda_without_compile
+2025-11-29 21:34:36,424 DEBUG:Compilation failed for config {'n_partition': 4, 'reduce_thread': 16} at index 6 with error: Cannot find global function target.build.tilelang_cuda_without_compile
+2025-11-29 21:34:36,463 DEBUG:Compilation failed for config {'n_partition': 4, 'reduce_thread': 32} at index 7 with error: Cannot find global function target.build.tilelang_cuda_without_compile
+2025-11-29 21:34:36,503 DEBUG:Compilation failed for config {'n_partition': 4, 'reduce_thread': 64} at index 8 with error: Cannot find global function target.build.tilelang_cuda_without_compile
+2025-11-29 21:34:36,541 DEBUG:Compilation failed for config {'n_partition': 8, 'reduce_thread': 16} at index 9 with error: Cannot find global function target.build.tilelang_cuda_without_compile
+2025-11-29 21:34:36,580 DEBUG:Compilation failed for config {'n_partition': 8, 'reduce_thread': 32} at index 10 with error: Cannot find global function target.build.tilelang_cuda_without_compile
+2025-11-29 21:34:36,619 DEBUG:Compilation failed for config {'n_partition': 8, 'reduce_thread': 64} at index 11 with error: Cannot find global function target.build.tilelang_cuda_without_compile
+2025-11-29 21:34:36,657 DEBUG:Compilation failed for config {'n_partition': 16, 'reduce_thread': 16} at index 12 with error: Cannot find global function target.build.tilelang_cuda_without_compile
+2025-11-29 21:34:36,696 DEBUG:Compilation failed for config {'n_partition': 16, 'reduce_thread': 32} at index 13 with error: Cannot find global function target.build.tilelang_cuda_without_compile
+2025-11-29 21:34:36,735 DEBUG:Compilation failed for config {'n_partition': 16, 'reduce_thread': 64} at index 14 with error: Cannot find global function target.build.tilelang_cuda_without_compile
+2025-11-29 21:34:36,774 DEBUG:Compilation failed for config {'n_partition': 32, 'reduce_thread': 16} at index 15 with error: Cannot find global function target.build.tilelang_cuda_without_compile
+2025-11-29 21:34:36,813 DEBUG:Compilation failed for config {'n_partition': 32, 'reduce_thread': 32} at index 16 with error: Cannot find global function target.build.tilelang_cuda_without_compile
+2025-11-29 21:34:36,852 DEBUG:Compilation failed for config {'n_partition': 32, 'reduce_thread': 64} at index 17 with error: Cannot find global function target.build.tilelang_cuda_without_compile
+2025-11-29 21:34:36,853 ERROR:Auto-tuning failed: No configuration successfully compiled and passed benchmarking/validation.
