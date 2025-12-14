@@ -1,61 +1,18 @@
-#include <iostream>
-#include <cstdlib>
+
+
+
+
+#pragma once 
+ 
 #include <cuda_runtime.h>
-#include <cuda_fp16.h> 
-#include <sys/time.h>
-#include <stdint.h>
-#include <assert.h>
+#include <stddef.h>
+#include <cudaTypedefs.h>
+#include <cuda_bf16.h>
+#include <cuda.h>
+#include <cublas_v2.h>
+#include <cublasLt.h>
 
-#define HALF2(value) (reinterpret_cast<half2 *>(&(value))[0])
-#define BFLOAT2(value) (reinterpret_cast<__nv_bfloat162 *>(&(value))[0])
-
-template <const int kWarpSize = 32>
-__device__ __forceinline__ float warp_reduce_sum_f32(float val) {
-#pragma unroll
-  for (int mask = kWarpSize >> 1; mask >= 1; mask >>= 1) {
-    val += __shfl_xor_sync(0xffffffff, val, mask);
-  }
-  return val;
-} 
-
-template <const int kWarpSize = 32>
-__device__ __forceinline__ half warp_reduce_sum_f16(half val) {
-#pragma unroll
-  for (int mask = kWarpSize >> 1; mask >= 1; mask >>= 1) {
-    val += __shfl_xor_sync(0xffffffff, val, mask);
-  }
-  return val;
-}
-
-
-__device__ __forceinline__ uint32_t ld_gbl_cs(const __restrict__ uint32_t *addr) {
-	uint32_t return_value;
-	asm("ld.global.cs.u32 %0, [%1];" : "=r"(return_value) : "l"(addr));
-	return return_value;
-}
-
-
-#define WARP_SIZE 32
-
-
-__device__ __forceinline__ uint2 ld_cs_u32_v2(const uint2 *p_src)
-{
-  uint2 n_result;
-  asm("ld.global.cs.v2.u32 {%0,%1}, [%2];"  : "=r"(n_result.x), "=r"(n_result.y) : "l"(p_src));
-  return n_result;
-}
-
-
-template <typename T, int n>
-struct Vec {
-  T elems[n];
-  __device__ T& operator[](int i) {
-    return elems[i];
-  }
-};
-
-using FragB = Vec<half2, 2>;
-
+// nvcc -ptx -arch=compute_90a -arch=compute_90a kernel.cu -o kernel.ptx
 
 template <int lut>
 __device__ inline int lop3(int a, int b, int c) {
@@ -66,12 +23,13 @@ __device__ inline int lop3(int a, int b, int c) {
   );
   return res;
 }
-// https://github.com/NVIDIA/TensorRT-LLM/blob/77940635bb59d41b945c02430db49c11294b7973/cpp/tensorrt_llm/cutlass_extensions/include/cutlass_extensions/interleaved_numeric_conversion.h#L265
-// todo
-__device__ inline void dequant(int q, half2* frag_b) {
 
 
-        uint32_t* h = reinterpret_cast<uint32_t*>(frag_b);
+extern "C" {
+__device__ __noinline__ float4 dequant(int q) {
+
+        float4 output;
+        uint32_t* h = reinterpret_cast<uint32_t*>(&output);
         uint32_t const i4s = reinterpret_cast<uint32_t const&>(q);
 
         // First, we extract the i4s and construct an intermediate fp16 number.
@@ -80,13 +38,6 @@ __device__ inline void dequant(int q, half2* frag_b) {
         static constexpr uint32_t TOP_MASK = 0x00f000f0;
         static constexpr uint32_t I4s_TO_F16s_MAGIC_NUM = 0x64006400;
 
-        // Note that the entire sequence only requires 1 shift instruction. This is thanks to the register packing
-        // format and the fact that we force our integers to be unsigned, and account for this in the fp16 subtractions.
-        // In addition, I exploit the fact that sub and fma have the same throughput in order to convert elt_23 and
-        // elt_67 to fp16 without having to shift them to the bottom bits before hand.
-
-        // Shift right by 8 to now consider elt_45 and elt_67. Issue first to hide RAW dependency if we issue
-        // immediately before required.
         const uint32_t top_i4s = i4s >> 8;
         // Extract elt_01 - (i4s & 0x000f000f) | 0x64006400
         asm volatile("lop3.b32 %0, %1, %2, %3, %4;\n"
@@ -124,5 +75,18 @@ __device__ inline void dequant(int q, half2* frag_b) {
         asm volatile("sub.f16x2 %0, %1, %2;\n" : "=r"(h[2]) : "r"(h[2]), "r"(FP16_TOP_MAGIC_NUM));
         // Convert elt_67
         asm volatile("fma.rn.f16x2 %0, %1, %2, %3;\n" : "=r"(h[3]) : "r"(h[3]), "r"(ONE_SIXTEENTH), "r"(NEG_72));
+
+        return output;
+}
+
+
+
+  __global__ void test_dequant(int input, float4 *output){
+
+
+      float4 output_ = dequant(input);
+      output[0] = output_;
+  
+  }
 
 }

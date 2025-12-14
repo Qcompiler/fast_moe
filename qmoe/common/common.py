@@ -14,8 +14,10 @@ def generate_randint(k, out_dim, device, dtype = torch.float16):
     # weight[:, ind:ind+1] = -8
     #   weight[out_dim-3,:] = 0
     #   weight[:, 0:32] = torch.randint(low=-8, high=8, size=(out_dim, 32)).to(torch.float16).to(device)
-    #   vector =  torch.ones((1, k)).to(torch.float16).to(device) 
+    # vector =  torch.ones((1, k)).to(torch.float16).to(device) 
     # vector =  torch.zeros((1, k)).to(torch.float16).to(device) 
+    # ind = 5
+    # print(ind)
     # vector[0, ind:ind+1] = 1
     # vector[0, 0:8] = torch.randint(low=-3, high=3, size=(1, 8)).to(torch.float16).to(device)
   

@@ -698,14 +698,14 @@ for (out_dim, k) in [ (4096, 4096), (2048, 4096), (4096, 8192), (12288, 4096), (
     if args.marlin == 1:
       ms = do_bench(lambda: marlin.mul(vector, B, C_i4mar, s, workspace, thread_k, thread_n, -1))
     if args.cuda == 1:
-      ms = do_bench_cudagraph(lambda: lib.warp_specialized_gemv_host(q_weight, vector, c, scales))
+      ms = do_bench(lambda: lib.warp_specialized_gemv_host(q_weight, vector, c, scales))
     if args.triton == 1:
-      ms = do_bench_cudagraph(lambda: gemv_int4(q_weight, vector, c_triton))
+      ms = do_bench(lambda: gemv_int4(q_weight, vector, c_triton))
     if args.bitblas == 1:
-      ms = do_bench_cudagraph(lambda: matmul(input_tensor, weight_tensor_int4, scale=scaling, zeros=zeros))
+      ms = do_bench(lambda: matmul(input_tensor, weight_tensor_int4, scale=scaling, zeros=zeros))
     if args.gemlite == 1:
 
-      ms = do_bench_cudagraph(lambda: gemlite_linear.forward_manual(vector, matmul_type=matmul_type))
+      ms = do_bench(lambda: gemlite_linear.forward_manual(vector, matmul_type=matmul_type))
 
 
     # ms = do_bench(lambda: torch.mm(vector, weight.T))

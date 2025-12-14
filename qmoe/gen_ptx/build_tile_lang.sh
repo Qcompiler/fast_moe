@@ -1,0 +1,1 @@
+nvcc -std=c++17 -w -Xcudafe --diag_suppress=177 --compiler-options -fPIC -lineinfo wrapped_kernel.cu -lcuda -gencode arch=compute_90a,code=sm_90a -I/home/chenyidong/anaconda3/envs/dsl/lib/python3.11/site-packages/tilelang/3rdparty/cutlass/include -I/home/chenyidong/anaconda3/envs/dsl/lib/python3.11/site-packages/tilelang/3rdparty/../src
