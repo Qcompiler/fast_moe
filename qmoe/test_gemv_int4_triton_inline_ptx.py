@@ -1,6 +1,6 @@
 import torch
 from jitcu import load_cuda_ops
-from triton.testing import do_bench
+from triton.testing import do_bench, do_bench_cudagraph
 
 import torch
 import numpy as np
@@ -12,7 +12,7 @@ torch.random.manual_seed(seed)
 
 from qmoe.common.common import  import_code
 
-code = import_code("i4_kernel_fast.cu")
+code = import_code("cuda_src/i4_kernel_fast.cu")
 
 
 
@@ -222,7 +222,6 @@ def sum_4_half(x1, x2, vec1, vec2):
               mov.b32 vec2, $2;
               mov.b32 x1, $3;
               mov.b32 x2, $4;
-
               mul.f16x2 vec1, vec1, x1;
               mul.f16x2 vec2, vec2, x2;
               add.f16x2 vec_sum, vec1, vec2;
@@ -260,7 +259,7 @@ def load_v4_b32(ptr):
 def get_autotune_config():
     configs = []
     for evict in ['evict_last', 'evict_first', None]:
-        configs.append(triton.Config({ 'evict' : evict} ,  num_warps = 4 ))
+        configs.append(triton.Config({ 'evict' : evict} ))
 
     return configs
 
@@ -415,7 +414,7 @@ capability = torch.cuda.get_device_capability(device)
 
 capa_map = {89: "89", 90: "90a"}
 lib = load_cuda_ops(
-  name="test",
+  name="test_sm" + str(capa_map[capability[0] * 10 + capability[1]]),
   sources=code,
   func_names=["warp_specialized_gemv_host"],
   func_params=["t_t_t_t"],
@@ -700,16 +699,16 @@ for (out_dim, k) in [ (4096, 4096), (2048, 4096), (4096, 8192), (12288, 4096), (
     temp_file.write_text(kernel.asm['ptx'])
 
 
-    # filename = "test.ttgir"
-    # temp_file = (tmp / filename)
+    filename = "test.ttgir"
+    temp_file = (tmp / filename)
     # # # print(kernel.asm.keys())
     # # # exit()
     
-    # temp_file.write_text(kernel.asm['ttgir'])
-    # kernel = triton.compile(str(temp_file))
+    temp_file.write_text(kernel.asm['ttgir'])
+    kernel = triton.compile(str(temp_file))
     # # print(kernel)
     # c_triton_2 = torch.zeros((1, out_dim), dtype=dtype, device=device)
-    # run_kernel(q_weight, vector, c_triton_2, kernel)
+    run_kernel(q_weight, vector, c_triton_2, kernel)
     # print(c_triton_2)
  
   # print(c_triton)
@@ -826,25 +825,26 @@ for (out_dim, k) in [ (4096, 4096), (2048, 4096), (4096, 8192), (12288, 4096), (
 
   with torch.cuda.stream(torch.cuda.Stream()):
     if args.marlin == 1:
-      ms = do_bench(lambda: marlin.mul(vector, B, C_i4mar, s, workspace, thread_k, thread_n, -1), warmup=200, rep=200)
+        ms = do_bench(lambda: marlin.mul(vector, B, C_i4mar, s, workspace, thread_k, thread_n, -1), 
+                      warmup=200, rep=1000)
     if args.cuda == 1:
-      ms = do_bench(lambda: lib.warp_specialized_gemv_host(q_weight, vector, c, scales), warmup=200, rep=200)
+        ms = do_bench(lambda: lib.warp_specialized_gemv_host(q_weight, vector, c, scales), warmup=200, rep=1000)
     if args.triton == 1:
-      ms = do_bench(lambda: gemv_int4(q_weight, vector, c_triton), warmup=200, rep=200)
+        ms = do_bench(lambda: gemv_int4(q_weight, vector, c_triton), warmup=200, rep=1000)
     if args.bitblas == 1:
-      ms = do_bench(lambda: bitblas_linear(vector), warmup=200, rep=200)
+        ms = do_bench(lambda: bitblas_linear(vector), warmup=200, rep=1000)
     if args.gemlite == 1:
       # gemlite_linear.forward = lambda x: gemlite_linear.forward_manual(x, matmul_type="GEMV_REVSPLITK")
       # ms  = do_bench(lambda x: gemlite_linear(vector), {'x': vector.to(gemlite_linear.compute_dtype)}) 
-      ms = do_bench(lambda: gemlite_linear.forward_manual(vector, matmul_type=matmul_type), warmup=200, rep=200)
+        ms = do_bench(lambda: gemlite_linear.forward_manual(vector, matmul_type="GEMV_REVSPLITK"))
 
     if args.micro == 1:
       # print("call test dequant")
-      ms = do_bench(lambda: test_dequant(q_weight, vector, c_triton_2), warmup=200, rep=200)
-      # ms = do_bench(lambda: run_kernel(q_weight, vector, c_triton_2, kernel))
+        # ms = do_bench(lambda: test_dequant(q_weight, vector, c_triton_2), warmup=200, rep=200)
+        ms = do_bench(lambda: run_kernel(q_weight, vector, c_triton_2, kernel), warmup=200, rep=1000)
 
     if args.tilelang == 1:
-       ms = do_bench(lambda: kernel(vector, qB, c_triton), warmup=200, rep=200)
+        ms = do_bench(lambda: kernel(vector, qB, c_triton), warmup=200, rep=1000)
       
  
  

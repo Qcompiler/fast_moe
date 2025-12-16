@@ -28,32 +28,29 @@
 
 学习 int 4 gemv
 
-srun -N 1  --pty --gres=gpu:H100:1  python   test_gemv_int4.py
+``` srun -N 1  --pty --gres=gpu:H100:1  python   test_gemv_int4.py```
 
 学习 int 4 gemv group
 
-srun -N 1  --pty --gres=gpu:H100:1  python   test_gemv_int4_group.py
+```srun -N 1  --pty --gres=gpu:H100:1  python   test_gemv_int4_group.py```
 
 学习 int4 gemv mix
 
-srun -N 1  --pty --gres=gpu:H100:1  python   test_gemv_mix.py
+```srun -N 1  --pty --gres=gpu:H100:1  python   test_gemv_mix.py```
 
 学习 int4 gemv mix group
 
-srun -N 1  --pty --gres=gpu:H100:1  python   test_gemv_int4_group_mix.py
+``` srun -N 1  --pty --gres=gpu:H100:1  python   test_gemv_int4_group_mix.py```
 
 学习 moe 
-
+```
 moe_gemv_gate.py
-moe_gemv_down.py
+moe_gemv_down.py```
 
 
 学习 int4 moe
-
+```
 i4_moe_gemv_gate.py
 i4_moe_gemv_down.py
-
-
-
-# 
+```
 
