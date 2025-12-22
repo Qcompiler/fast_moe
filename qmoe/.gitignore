@@ -10,6 +10,7 @@ backup/
 tmp/
 figure/
 log/
-ptx/*.png
+ptx/
+*.png
 *.ttgir
 *.ttir
