@@ -1,0 +1,15 @@
+build/
+__pycache__/
+dist/*
+FastGEMV/
+*-info/
+old/
+objs/
+build
+backup/
+tmp/
+figure/
+log/
+ptx/*.png
+*.ttgir
+*.ttir

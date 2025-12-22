@@ -206,6 +206,38 @@ def save_i32(ptr):
         pack=1
     )
 
+
+@triton.jit
+def sum_2_half(x1, vec1):
+    # x1 : int32 x2: int32
+    # vec1 : int32 vec2: int32
+    # x1 * vec1 
+    y = tl.inline_asm_elementwise(
+        asm="""
+            {
+              .reg .b32 vec1, vec_sum;
+              .reg .b16 h_low, h_high, h_final;
+              .reg .b32 x1;
+              mov.b32 vec1, $1;
+              mov.b32 x1, $2;
+              mul.f16x2 vec_sum, vec1, x1;
+              mov.b32 {h_high, h_low}, vec_sum; 
+              add.f16 h_final, h_high, h_low;              
+              cvt.u16.u16 $0, h_final;
+               
+            }
+        """,
+        constraints=(
+            "=f,r,r"
+        ),
+        args=[x1, vec1],  # 参数 1 2
+        dtype=(tl.float16), #参数 0
+        is_pure=False,
+        pack=1,
+    )
+
+    return y
+
 @triton.jit
 def sum_4_half(x1, x2, vec1, vec2):
     # x1 : int32 x2: int32
@@ -217,7 +249,6 @@ def sum_4_half(x1, x2, vec1, vec2):
               .reg .b32 vec1, vec2, vec_sum;
               .reg .b16 h_low, h_high, h_final;
               .reg .b32 x1, x2;
-
               mov.b32 vec1, $1;
               mov.b32 vec2, $2;
               mov.b32 x1, $3;
@@ -259,7 +290,8 @@ def load_v4_b32(ptr):
 def get_autotune_config():
     configs = []
     for evict in ['evict_last', 'evict_first', None]:
-        configs.append(triton.Config({ 'evict' : evict} ))
+        for evict_scales in ['evict_last', 'evict_first', None]:
+            configs.append(triton.Config({ 'evict' : evict, 'evict_scales' : evict_scales}))
 
     return configs
 
@@ -269,24 +301,15 @@ def get_autotune_config():
     use_cuda_graph = False
 )
 
-# bandwidth_gb_s=2771.1846914627185 GB/s, 0.0312652587890625 GB, 0.011282271761020632 ms
-# bandwidth_gb_s=1781.0717729268401 GB/s, 0.015636444091796875 GB, 0.008779233004238489 ms
-# bandwidth_gb_s=3476.3029263603253 GB/s, 0.06252288818359375 GB, 0.017985454521092313 ms
-# bandwidth_gb_s=4039.256917884022 GB/s, 0.093780517578125 GB, 0.02321726978120823 ms
-# bandwidth_gb_s=4197.0196543086395 GB/s, 0.125030517578125 GB, 0.029790310238306673 ms
-
-# bandwidth_gb_s=2689.5808309364393 GB/s, 0.0312652587890625 GB, 0.011624584184062908 ms
-# bandwidth_gb_s=1681.3317100387194 GB/s, 0.015636444091796875 GB, 0.009300035203307255 ms
-# bandwidth_gb_s=3339.9695714004183 GB/s, 0.06252288818359375 GB, 0.018719598142140702 ms
-# bandwidth_gb_s=3920.364716045492 GB/s, 0.093780517578125 GB, 0.023921375782792544 ms
-# bandwidth_gb_s=4152.871550154068 GB/s, 0.125030517578125 GB, 0.030107003327248697 ms
 @triton.jit
 def test_dequant_kernel(
     A_ptr, x_ptr, y_ptr,
+    scales_ptr,
     m, k, int4_k,
     stride_am, 
     BLOCK_SIZE : tl.constexpr = 256,
     evict : tl.constexpr = 'evict_first',
+    evict_scales : tl.constexpr = None,
     new : tl.constexpr = True
 ):
 
@@ -296,46 +319,30 @@ def test_dequant_kernel(
     acc = 0
     acc = acc.to(tl.float16)
     all1 =   tl.zeros([BLOCK_SIZE], dtype=tl.float16)
-    all2 =   tl.zeros([BLOCK_SIZE], dtype=tl.float16)
-
     offs_k =  tl.arange(0, BLOCK_SIZE)
     A_offset = row_id * stride_am + (offs_k)
-    
+
     A_ptr = A_ptr + A_offset
     x_ptr = x_ptr + (offs_k * 2)
-    # x_ptr_int = tl.cast(x_ptr, (tl.uint32), bitcast = True)
     for kk in range(0, tl.cdiv(int4_k, BLOCK_SIZE)):
        
-      x1, x2, x3, x4 = load_v4_b32(x_ptr)
-      a = tl.load(A_ptr,  eviction_policy = evict)
-      
-      
-      # -----------------------
-      if new:
-
+        x1, x2, x3, x4 = load_v4_b32(x_ptr)
+        a = tl.load(A_ptr,  eviction_policy = evict)
         a1, a2, a3, a4 = dequanti_tensorRT_llm(a) 
-        all1 += sum_4_half(a1, a2, x1, x2) 
-        all2 += sum_4_half(a3, a4, x3, x4) 
+        all1 += sum_4_half(a1, a2, x1, x2)
+        all1 += sum_4_half(a3, a4, x3, x4)
+  
+        offs_k +=  BLOCK_SIZE 
+        A_ptr += (BLOCK_SIZE) 
+        x_ptr += (BLOCK_SIZE * 2)
 
-      else:
-
-        a1, a2 = dequanti(a) 
-        all1 = sum_4_half(a1, a2, x1, x2)     
-        b = a >> 8
-        a5, a6 = dequanti(b)       
-        all2 = sum_4_half(a5, a6, x3, x4) 
-      
-      
-      offs_k +=  BLOCK_SIZE 
-      A_ptr += (BLOCK_SIZE) 
-      x_ptr += (BLOCK_SIZE * 2)
-
-    acc = tl.sum(all1 + all2, axis=0) 
-
+    acc = tl.sum(all1, axis=0) 
+    scales = tl.load(scales_ptr + row_id, eviction_policy = evict_scales)
+    acc = acc * scales
     tl.store(y_ptr + row_id, acc)
 
 
-def test_dequant(A: torch.Tensor, vector: torch.Tensor, output):
+def test_dequant(A: torch.Tensor, vector: torch.Tensor, output, scales):
     n, _ = A.shape
     k = vector.shape[1] # [m, k ]
     device = A.device
@@ -350,14 +357,7 @@ def test_dequant(A: torch.Tensor, vector: torch.Tensor, output):
     uint64_tensor = torch.tensor([], dtype=torch.uint64,device=device).set_(storage, 0, (k // 4,))
     int4_k = int(A.shape[1])
     
-    # if out_dim > 4096:
-    #   evict = 'evict_first'
-    # else:
-    #   evict = 'evict_last'
-    
-    # ret = triton.compile(kernel, signature="*fp32,i32,*fp32,i32", constants={"BLOCK_M": 64, "BLOCK_N": 64})
-    # kernel = triton.compile(test_dequant_kernel)
-    kernel = test_dequant_kernel[grid](A, uint64_tensor, output, n, k, int4_k,  
+    kernel = test_dequant_kernel[grid](A, uint64_tensor, output, scales, n, k, int4_k,  
                             stride_ak)
     
     
@@ -365,34 +365,10 @@ def test_dequant(A: torch.Tensor, vector: torch.Tensor, output):
 
 
 
-def test_dequant(A: torch.Tensor, vector: torch.Tensor, output, ptx = 0):
-    n, _ = A.shape
-    k = vector.shape[1] # [m, k ]
-    device = A.device
-    stride_ak, stride_an = A.stride()
-    stride_cm, stride_cn = output.stride()
-    assert vector.shape[1] == A.shape[1] * 8, "Vector and input tensor shape mismatch"
-    assert A.device == device and vector.device == device and output.device == device, "Tensors must be on CUDA"
-    grid = lambda meta: (n, 1)
-    
-    storage = vector.untyped_storage()
-    # k = vector.numel()  # 元素数量
-    uint64_tensor = torch.tensor([], dtype=torch.uint64,device=device).set_(storage, 0, (k // 4,))
-    int4_k = int(A.shape[1])
-    
-    
-    # ret = triton.compile(kernel, signature="*fp32,i32,*fp32,i32", constants={"BLOCK_M": 64, "BLOCK_N": 64})
-    # kernel = triton.compile(test_dequant_kernel)
 
 
-    kernel = test_dequant_kernel[grid](A, uint64_tensor, output, n, k, int4_k,  
-                            stride_ak)
-    
-    
-    return kernel
 
-
-def run_kernel(A: torch.Tensor, vector: torch.Tensor, output, kernel):
+def run_kernel(A: torch.Tensor, vector: torch.Tensor, output, kernel, scales):
     n, _ = A.shape
     k = vector.shape[1] # [m, k ]
     device = A.device
@@ -403,8 +379,8 @@ def run_kernel(A: torch.Tensor, vector: torch.Tensor, output, kernel):
     int4_k = int(A.shape[1])    
     
  
-    kernel[n, 1, 1](A, uint64_tensor, output, n, k, int4_k,  
-                            stride_ak)
+    kernel[n, 1, 1](A, uint64_tensor, output, scales, n, k, int4_k,  
+                            stride_ak, stride_an)
     
 
 # ret = compile_kernel()
@@ -641,9 +617,9 @@ def flush_l2_cache(device: torch.device = None, size_mb: int = 100):
 
 
 
-# for (out_dim, k) in [ (4096, 4096), (2048, 4096), (4096, 8192), (12288, 4096), (8192, 8192) ]:
+for (out_dim, k) in [  (4096, 4096), (2048, 4096), (4096, 8192), (12288, 4096), (8192, 8192) ]:
 # for (out_dim, k) in [  (8192, 8192) ]:
-for (out_dim, k) in [ (4096, 4096), (2048, 4096), (4096, 8192), (12288, 4096), (8192, 8192) ]:
+# for (out_dim, k) in [  (4096, 4096), (8192, 8192) , (8192, 57344), (28672, 8192)]:
   dtype = torch.float16
 
 
@@ -682,11 +658,12 @@ for (out_dim, k) in [ (4096, 4096), (2048, 4096), (4096, 8192), (12288, 4096), (
   # print(torch.mm(vector, weight.t()))
   c_triton_2 = torch.zeros((1, out_dim), dtype=dtype, device=device)
 
-  
-  kernel = test_dequant(q_weight, vector, c_triton_2)
+  if args.micro:
+    scales = scales.to(torch.float16)
+  kernel = test_dequant(q_weight, vector, c_triton_2, scales)
   # print(c_triton_2)
 
-  if 1:
+  if 0:
     from pathlib import Path
     tmp = Path("/home/chenyidong/newstart/bandwidth/qmoe/build")
 
@@ -708,7 +685,7 @@ for (out_dim, k) in [ (4096, 4096), (2048, 4096), (4096, 8192), (12288, 4096), (
     kernel = triton.compile(str(temp_file))
     # # print(kernel)
     # c_triton_2 = torch.zeros((1, out_dim), dtype=dtype, device=device)
-    run_kernel(q_weight, vector, c_triton_2, kernel)
+    run_kernel(q_weight, vector, c_triton_2, scales, kernel)
     # print(c_triton_2)
  
   # print(c_triton)
@@ -721,7 +698,7 @@ for (out_dim, k) in [ (4096, 4096), (2048, 4096), (4096, 8192), (12288, 4096), (
     
     
     # pass
-    torch.testing.assert_close(c, c_triton_2 * scales.T.to(torch.float16), rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(c, c_triton_2, rtol=1e-2, atol=1e-2)
 
   # exit()
   
@@ -826,13 +803,13 @@ for (out_dim, k) in [ (4096, 4096), (2048, 4096), (4096, 8192), (12288, 4096), (
   with torch.cuda.stream(torch.cuda.Stream()):
     if args.marlin == 1:
         ms = do_bench(lambda: marlin.mul(vector, B, C_i4mar, s, workspace, thread_k, thread_n, -1), 
-                      warmup=200, rep=1000)
+                      warmup=500, rep=2000)
     if args.cuda == 1:
-        ms = do_bench(lambda: lib.warp_specialized_gemv_host(q_weight, vector, c, scales), warmup=200, rep=1000)
+        ms = do_bench(lambda: lib.warp_specialized_gemv_host(q_weight, vector, c, scales), warmup=500, rep=2000)
     if args.triton == 1:
-        ms = do_bench(lambda: gemv_int4(q_weight, vector, c_triton), warmup=200, rep=1000)
+        ms = do_bench(lambda: gemv_int4(q_weight, vector, c_triton), warmup=500, rep=2000)
     if args.bitblas == 1:
-        ms = do_bench(lambda: bitblas_linear(vector), warmup=200, rep=1000)
+        ms = do_bench(lambda: bitblas_linear(vector), warmup=500, rep=2000)
     if args.gemlite == 1:
       # gemlite_linear.forward = lambda x: gemlite_linear.forward_manual(x, matmul_type="GEMV_REVSPLITK")
       # ms  = do_bench(lambda x: gemlite_linear(vector), {'x': vector.to(gemlite_linear.compute_dtype)}) 
@@ -840,13 +817,9 @@ for (out_dim, k) in [ (4096, 4096), (2048, 4096), (4096, 8192), (12288, 4096), (
 
     if args.micro == 1:
       # print("call test dequant")
-        # ms = do_bench(lambda: test_dequant(q_weight, vector, c_triton_2), warmup=200, rep=200)
-        ms = do_bench(lambda: run_kernel(q_weight, vector, c_triton_2, kernel), warmup=200, rep=1000)
+        ms = do_bench(lambda: test_dequant(q_weight, vector, c_triton_2, scales), warmup=500, rep=2000)
+        # ms = do_bench(lambda: run_kernel(q_weight, vector, c_triton_2, scales, kernel), warmup=500, rep=2000)
 
-    if args.tilelang == 1:
-        ms = do_bench(lambda: kernel(vector, qB, c_triton), warmup=200, rep=1000)
-      
- 
  
   gb = (out_dim * k + out_dim + k) * 2 / 1024 / 1024 / 1024
   bandwidth_gb_s = (gb) / ms * 1000
