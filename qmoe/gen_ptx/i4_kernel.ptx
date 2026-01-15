@@ -10,8 +10,9 @@
 .target sm_90a
 .address_size 64
 
+	// .globl	dequant
 
-.func  (.param .align 4 .b8 func_retval0[16]) dequant(
+.visible .func  (.param .align 16 .b8 func_retval0[16]) dequant(
 	.param .b32 dequant_param_0
 )
 {
@@ -64,39 +65,6 @@
 	st.param.f32 	[func_retval0+4], %f2;
 	st.param.f32 	[func_retval0+8], %f3;
 	st.param.f32 	[func_retval0+12], %f1;
-	ret;
-
-}
-	// .globl	test_dequant
-.visible .entry test_dequant(
-	.param .u32 test_dequant_param_0,
-	.param .u64 test_dequant_param_1
-)
-{
-	.reg .f32 	%f<5>;
-	.reg .b32 	%r<2>;
-	.reg .b64 	%rd<3>;
-
-
-	ld.param.u32 	%r1, [test_dequant_param_0];
-	ld.param.u64 	%rd1, [test_dequant_param_1];
-	cvta.to.global.u64 	%rd2, %rd1;
-	{ // callseq 0, 0
-	.reg .b32 temp_param_reg;
-	.param .b32 param0;
-	st.param.b32 	[param0+0], %r1;
-	.param .align 4 .b8 retval0[16];
-	call.uni (retval0), 
-	dequant, 
-	(
-	param0
-	);
-	ld.param.f32 	%f1, [retval0+0];
-	ld.param.f32 	%f2, [retval0+4];
-	ld.param.f32 	%f3, [retval0+8];
-	ld.param.f32 	%f4, [retval0+12];
-	} // callseq 0
-	st.global.v4.f32 	[%rd2], {%f1, %f2, %f3, %f4};
 	ret;
 
 }

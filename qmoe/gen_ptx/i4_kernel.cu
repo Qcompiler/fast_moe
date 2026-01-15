@@ -12,7 +12,7 @@
 #include <cublas_v2.h>
 #include <cublasLt.h>
 
-// nvcc -ptx -arch=compute_90a -arch=compute_90a kernel.cu -o kernel.ptx
+//  nvcc -ptx -arch=compute_90a -rdc=true i4_kernel.cu -o i4_kernel.ptx
 
 template <int lut>
 __device__ inline int lop3(int a, int b, int c) {
@@ -81,12 +81,6 @@ __device__ __noinline__ float4 dequant(int q) {
 
 
 
-  __global__ void test_dequant(int input, float4 *output){
-
-
-      float4 output_ = dequant(input);
-      output[0] = output_;
-  
-  }
+ 
 
 }
